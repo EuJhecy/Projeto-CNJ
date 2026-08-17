@@ -1,0 +1,32 @@
+name: Executar Robô CNJ
+
+# Define que o script vai rodar toda segunda-feira às 08:00
+# e também permite rodar manualmente
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+jobs:
+  executar-robo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências e navegadores
+        run: |
+          pip install playwright pandas sqlalchemy psycopg2-binary
+          playwright install --with-deps chromium
+
+      - name: Executar o robô em Python
+        env:
+          # Injeta a credencial salva nos Secrets
+          URL_BANCO: ${{ secrets.URL_BANCO }}
+        run: python extracao_dados_cnj.py
