@@ -42,9 +42,13 @@ def run(playwright: Playwright) -> None:
                        'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST']
 
     # CLICAR NA LISTA DO PAINEL PARA FAZER O DOWNLOAD
-    painel_powerbi.locator(
-        "div:nth-child(7) > .vcBody > .visualWrapper > visual-modern > .visual > .slicer-container > .slicer-content-wrapper > .slicer-dropdown-menu > .dropdown-chevron"
-    ).click()
+    lista_tribunais_pbi = "div:nth-child(7) > .vcBody > .visualWrapper > visual-modern > .visual > .slicer-container > .slicer-content-wrapper > .slicer-dropdown-menu > .dropdown-chevron"
+
+    # PARA ESPERAR O ELEMENTO FICAR PRONTO ANTES DE CLICAR
+    painel_powerbi.locator(seletor_dropdown).wait_for(state="visible", timeout=60000) #timeout em milissegundos (60s)
+
+    # CLIQUE COM UM TEMPO DE TOLERÂNCIA MAIOR (60s)
+    painel_powerbi.locator(lista_tribunais_pbi).click(timeout=60000)
     
     
     # LOOP PARA BAIXSAR OS 92 ARQUIVOS
