@@ -43,8 +43,7 @@ def run(playwright: Playwright) -> None:
 
     # CLICAR NA LISTA DO PAINEL PARA FAZER O DOWNLOAD
     painel_powerbi.locator(
-        "div:nth-child(7) > .vcBody > .visualWrapper > visual-modern > .visual > .slicer-container >\
-        .slicer-content-wrapper > .slicer-dropdown-menu > .dropdown-chevron"
+        "div:nth-child(7) > .vcBody > .visualWrapper > visual-modern > .visual > .slicer-container > .slicer-content-wrapper > .slicer-dropdown-menu > .dropdown-chevron"
     ).click()
     
     
@@ -64,7 +63,7 @@ def run(playwright: Playwright) -> None:
     
         download = download_info.value
     
-        # SALVAR O ARQUIVO LOCALMENTE
+        # SALVAR O ARQUIVO LOCALMENTE COM NOME PERSONALIZADO
         nome_do_arquivo = f"dados_tribunal_{nome_tribunal[i-1]}_{hoje}.zip" # os dados vêm do painel compactados
         download.save_as(nome_do_arquivo)
 
@@ -73,12 +72,15 @@ def run(playwright: Playwright) -> None:
     
         # LER E TRATAR COM PANDAS
         caminho_temporario = download.path() # ler caminho temporário do arquivp
-        df = pd.read_csv(caminho_temporario, compression='zip') # ler arquivo csv diretamente mesmo que esteja compactado
+        df = pd.read_csv(nome_do_arquivo, compression='zip') # ler arquivo csv diretamente mesmo que esteja compactado
         df['data_ref'] = hoje # add coluna data_ref
-
 
         # ENVIA ARQUIVO DO PANDAS PRO BD
         df.to_sql('dados_cnj', con=engine, if_exists="append", index=False)
+
+        # LIMPA O ARQUIVO ZIP LOCAL PARA NÃO ENCHER O DISCO DA MÁQUINA VIRTUAL
+        if os.path.exists(nome_do_arquivo):
+            os.remove(nome_do_arquivo)
  
 
     # ---------------------
