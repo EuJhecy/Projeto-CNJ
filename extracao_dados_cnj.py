@@ -7,25 +7,31 @@ from sqlalchemy import create_engine
 
 
 def run(playwright: Playwright) -> None:
-    browser = playwright.chromium.launch(headless=True) #HEADLESS = True tira o navegador. Baixa os dados em segundo plano
-    context = browser.new_context()
+    # 1. Configura navegador com resolução HD para garantir renderização dos elementos
+    browser = playwright.chromium.launch(headless=True)
+    context = browser.new_context(viewport={"width": 1366, "height": 768})
     page = context.new_page()
 
-
-    # CONECTANDO AO BANCO DE DADOS
+    # CONEXÃO BANCO
     URL_BANCO = os.getenv("URL_BANCO")
+    if not URL_BANCO:
+        raise ValueError("A variável de ambiente 'URL_BANCO' não foi encontrada!")
     engine = create_engine(URL_BANCO)
-  
-    # IR PRA PÁGINA DE DOWNLOAD
-    page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/")
 
-    # DEFINIÇÃO DO FRAME PRINCIPAL DO POWER BI
-    painel_powerbi = page.get_by_text("Este navegador não tem").content_frame
+    # 2. Navega e aguarda estabilização da rede
+    page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/", wait_until="networkidle", timeout=90000)
+    page.wait_for_timeout(5000)  # Pausa de segurança para o Power BI inicializar
 
-    # IR ATÉ A ABA DE DOWNLOADS
-    painel_powerbi.get_by_role("button", name="Downloads").click()
+    # 3. Localiza o iframe principal do Power BI
+    frame_element = page.wait_for_selector("iframe", timeout=60000)
+    painel_powerbi = frame_element.content_frame()
 
-    # DATA DE HOJE
+    # 4. Aguarda e clica na aba de Downloads
+    btn_downloads = painel_powerbi.get_by_role("button", name="Downloads")
+    btn_downloads.wait_for(state="visible", timeout=60000)
+    btn_downloads.click()
+    page.wait_for_timeout(3000)
+
     hoje = datetime.now().strftime("%Y-%m-%d")
     
     # LISTA DOS 92 TRIBUNAIS
