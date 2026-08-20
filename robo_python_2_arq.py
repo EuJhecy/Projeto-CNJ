@@ -33,7 +33,15 @@ def rodar_automacao():
         frame_principal.get_by_role("button", name="Downloads").click()
         page.wait_for_timeout(5000)
 
-       print("⏳ Clicando para baixar o arquivo...")
+        # Clica no filtro do menu
+        frame_principal.locator("i").nth(4).click()
+        page.wait_for_timeout(2000)
+
+        # Seleciona a opção do filtro
+        frame_principal.locator("div:nth-child(2) > .slicerItemContainer > .slicerCheckbox > .glyphicon").click()
+        page.wait_for_timeout(3000)
+
+        print("⏳ Clicando para baixar o arquivo...")
         
         # Localiza o elemento do sandbox com mais tolerância
         iframe_sandbox = frame_principal.locator("visual-container-group").filter(
@@ -45,20 +53,9 @@ def rodar_automacao():
         # Espera o botão estar pronto no DOM por até 2 minutos
         botao_exportar.wait_for(state="attached", timeout=120000)
 
-        # Dispara o download usando force=True para ignorar bloqueios visuais do headless
+        # Dispara o download usando force=True
         with page.expect_download(timeout=120000) as download_info:
             botao_exportar.click(force=True, timeout=120000)
-        
-        download = download_info.value
-        download.save_as(caminho_csv)
-        print(f"✅ CSV baixado com sucesso em: {caminho_csv}")
-
-        print("⏳ Clicando para baixar o arquivo...")
-        # Captura o evento de download acionado pelo clique
-        with page.expect_download(timeout=120000) as download_info:
-            frame_principal.locator("visual-container-group").filter(
-                has_text="Pressionar Enter para explorar os dadosLista de Processos por"
-            ).locator("iframe[name=\"visual-sandbox\"]").content_frame.locator("#sandbox-host").click()
         
         download = download_info.value
         download.save_as(caminho_csv)
