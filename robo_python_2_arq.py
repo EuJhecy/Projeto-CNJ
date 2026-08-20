@@ -1,5 +1,6 @@
 import os
 import json
+import psycopg2
 import csv
 import duckdb
 from datetime import datetime
@@ -83,31 +84,35 @@ def rodar_automacao():
     return caminho_csv
 
 def enviar_para_postgres(caminho_csv):
-    print("🐘 Conectando ao PostgreSQL (Supabase) via DuckDB...")
+    print("🐘 Conectando ao PostgreSQL (Supabase)...")
     
     url_banco = os.getenv("URL_BANCO")
     if not url_banco:
         raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
 
-    # Remove parâmetros incompatíveis com o driver C++ do DuckDB Postgres
-    if "&ipv6=" in url_banco or "?ipv6=" in url_banco:
-        url_banco = url_banco.split("&ipv6=")[0].split("?ipv6=")[0]
-
-    # Garante o parâmetro obrigatório de SSL
-    if "sslmode" not in url_banco:
-        url_banco += "&sslmode=require" if "?" in url_banco else "?sslmode=require"
-
-    con = duckdb.connect()
-    con.execute("INSTALL postgres; LOAD postgres;")
-    con.execute(f"ATTACH '{url_banco}' AS meu_postgres (TYPE POSTGRES);")
+    # Conecta diretamente via psycopg2 para evitar incompatibilidades do DuckDB com o Pooler
+    conn = psycopg2.connect(url_banco)
+    cursor = conn.cursor()
 
     print("📊 Criando a tabela no Supabase (se não existir)...")
-    con.execute("CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos (dados_raw VARCHAR);")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS dados_cnj_processos (
+            dados_raw TEXT
+        );
+    """)
 
     print("📥 Inserindo os dados do CSV no Supabase...")
-    con.execute(f"INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);")
+    with open(caminho_csv, "r", encoding="utf-8") as f:
+        # Pula o cabeçalho "dados_raw"
+        next(f)
+        cursor.copy_expert("COPY dados_cnj_processos (dados_raw) FROM STDIN WITH CSV", f)
+
+    conn.commit()
+    cursor.close()
+    conn.close()
 
     print("🏆 PROCESSO FINALIZADO! Dados gravados com sucesso no Supabase.")
+
 if __name__ == "__main__":
     arquivo_baixado = rodar_automacao()
     enviar_para_postgres(arquivo_baixado)
