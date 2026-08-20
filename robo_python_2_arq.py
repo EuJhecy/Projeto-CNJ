@@ -98,6 +98,7 @@ def enviar_para_postgres(caminho_csv):
     if not url_banco:
         raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
 
+    # Adiciona a regra de SSL caso não esteja na URL
     if "sslmode" not in url_banco:
         url_banco += "&sslmode=require" if "?" in url_banco else "?sslmode=require"
 
@@ -105,9 +106,14 @@ def enviar_para_postgres(caminho_csv):
     con.execute("INSTALL postgres; LOAD postgres;")
     con.execute(f"ATTACH '{url_banco}' AS meu_postgres (TYPE POSTGRES);")
 
-    print("📊 Importando CSV para a tabela no banco...")
+    print("📊 Substituindo a tabela pelos dados mais recentes...")
+    
+    # 1. Remove a tabela antiga caso ela já exista
+    con.execute("DROP TABLE IF EXISTS meu_postgres.dados_cnj_processos;")
+    
+    # 2. Cria a nova tabela com os dados do CSV recém-baixado
     con.execute(f"""
-        CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos AS 
+        CREATE TABLE meu_postgres.dados_cnj_processos AS 
         SELECT * FROM read_csv_auto('{caminho_csv}');
     """)
 
