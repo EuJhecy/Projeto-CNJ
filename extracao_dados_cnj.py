@@ -19,8 +19,8 @@ def run(playwright: Playwright) -> None:
     engine = create_engine(URL_BANCO)
 
     # 2. Navega e aguarda estabilização da rede
-    page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/", wait_until="networkidle", timeout=90000)
-    page.wait_for_timeout(5000)  # Pausa de segurança para o Power BI inicializar
+    page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/", wait_until="networkidle", timeout=300000)
+    page.wait_for_timeout(150000)  # Pausa de segurança para o Power BI inicializar
 
     # 3. Localiza o iframe principal do Power BI
     frame_element = page.wait_for_selector("iframe", timeout=60000)
@@ -30,7 +30,9 @@ def run(playwright: Playwright) -> None:
     btn_downloads = painel_powerbi.get_by_role("button", name="Downloads")
     btn_downloads.wait_for(state="visible", timeout=60000)
     btn_downloads.click()
-    page.wait_for_timeout(3000)
+
+    # Pausa de 1min segundos apenas para dar tempo da tela de Downloads abrir dentro do Power BI
+    page.wait_for_timeout(60000)
 
     hoje = datetime.now().strftime("%Y-%m-%d")
     
@@ -51,10 +53,10 @@ def run(playwright: Playwright) -> None:
     lista_tribunais_pbi = "div:nth-child(7) > .vcBody > .visualWrapper > visual-modern > .visual > .slicer-container > .slicer-content-wrapper > .slicer-dropdown-menu > .dropdown-chevron"
 
     # PARA ESPERAR O ELEMENTO FICAR PRONTO ANTES DE CLICAR
-    painel_powerbi.locator(lista_tribunais_pbi).wait_for(state="visible", timeout=60000) #timeout em milissegundos (60s)
+    painel_powerbi.locator(lista_tribunais_pbi).wait_for(state="visible", timeout=300000) #timeout em milissegundos (60s)
 
     # CLIQUE COM UM TEMPO DE TOLERÂNCIA MAIOR (60s)
-    painel_powerbi.locator(lista_tribunais_pbi).click(timeout=60000)
+    painel_powerbi.locator(lista_tribunais_pbi).click(timeout=300000)
     
     
     # LOOP PARA BAIXSAR OS 92 ARQUIVOS
