@@ -1,10 +1,10 @@
 import os
 import json
-import psycopg2
 import csv
 import duckdb
 from datetime import datetime
 from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 respostas_powerbi = []
 
@@ -83,33 +83,46 @@ def rodar_automacao():
     print(f"✅ CSV estruturado gerado com sucesso: {caminho_csv}")
     return caminho_csv
 
+
 def enviar_para_postgres(caminho_csv):
-    print("🐘 Conectando ao PostgreSQL (Supabase)...")
+    print("🐘 Conectando ao PostgreSQL (Supabase) via DuckDB...")
     
     url_banco = os.getenv("URL_BANCO")
     if not url_banco:
         raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
 
-    # Conecta diretamente via psycopg2 para evitar incompatibilidades do DuckDB com o Pooler
-    conn = psycopg2.connect(url_banco)
-    cursor = conn.cursor()
+    # Limpa a URL removendo parâmetros incompatíveis com o DuckDB (como ipv6)
+    parsed = urlparse(url_banco)
+    query_params = parse_qs(parsed.query)
+    
+    # Mantém apenas os parâmetros aceitos pelo driver C++ do DuckDB
+    params_validos = {}
+    if "sslmode" in query_params:
+        params_validos["sslmode"] = query_params["sslmode"][0]
+    else:
+        params_validos["sslmode"] = "require"
+
+    new_query = urlencode(params_validos)
+    url_limpa = urlunparse((
+        parsed.scheme,
+        parsed.netloc,
+        parsed.path,
+        parsed.params,
+        new_query,
+        parsed.fragment
+    ))
+
+    con = duckdb.connect()
+    con.execute("INSTALL postgres; LOAD postgres;")
+    
+    print("🔌 Anexando banco Supabase...")
+    con.execute(f"ATTACH '{url_limpa}' AS meu_postgres (TYPE POSTGRES);")
 
     print("📊 Criando a tabela no Supabase (se não existir)...")
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS dados_cnj_processos (
-            dados_raw TEXT
-        );
-    """)
+    con.execute("CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos (dados_raw VARCHAR);")
 
     print("📥 Inserindo os dados do CSV no Supabase...")
-    with open(caminho_csv, "r", encoding="utf-8") as f:
-        # Pula o cabeçalho "dados_raw"
-        next(f)
-        cursor.copy_expert("COPY dados_cnj_processos (dados_raw) FROM STDIN WITH CSV", f)
-
-    conn.commit()
-    cursor.close()
-    conn.close()
+    con.execute(f"INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);")
 
     print("🏆 PROCESSO FINALIZADO! Dados gravados com sucesso no Supabase.")
 
