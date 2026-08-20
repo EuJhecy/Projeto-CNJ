@@ -22,7 +22,7 @@ jobs:
 
       - name: Instalar dependências e navegadores
         run: |
-          pip install playwright pandas sqlalchemy psycopg2-binary
+          pip install playwright pandas sqlalchemy psycopg2-binary duckdb
           playwright install --with-deps chromium
 
       - name: Executar o robô em Python
