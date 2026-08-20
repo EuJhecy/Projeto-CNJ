@@ -1,7 +1,7 @@
 import os
 import json
+import csv
 import duckdb
-import pandas as pd
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
@@ -55,7 +55,7 @@ def rodar_automacao():
     if not respostas_powerbi:
         raise Exception("Nenhuma requisição de dados foi capturada do Power BI.")
 
-    # Processamento do Payload
+    # Processamento e extração nativa em Python
     linhas_extraidas = []
     for payload in respostas_powerbi:
         try:
@@ -65,22 +65,21 @@ def rodar_automacao():
                 value_dicts = result.get("PH", [{}])[0].get("DM0", [])
                 for item in value_dicts:
                     if "G0" in item:
-                        linhas_extraidas.append({"dados_raw": str(item["G0"])})
+                        linhas_extraidas.append([str(item["G0"])])
         except Exception:
             continue
 
-    # Criação do CSV estruturado
-    if linhas_extraidas:
-        df = pd.DataFrame(linhas_extraidas)
-        df.to_csv(caminho_csv, index=False)
-        print(f"✅ CSV estruturado gerado com sucesso: {caminho_csv}")
-    else:
-        # Fallback de segurança se o formato interno variar
-        with open(caminho_csv, "w", encoding="utf-8") as f:
-            f.write("conteudo_json\n")
-            f.write(f'"{json.dumps(respostas_powerbi)}"\n')
-        print("⚠️ Payload bruto salvo no CSV como estrutura plana.")
+    # Escreve o CSV usando o módulo csv nativo
+    with open(caminho_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["dados_raw"])  # Cabeçalho
+        if linhas_extraidas:
+            writer.writerows(linhas_extraidas)
+        else:
+            # Fallback seguro caso o payload venha num formato diferente
+            writer.writerow([json.dumps(respostas_powerbi)])
 
+    print(f"✅ CSV estruturado gerado com sucesso: {caminho_csv}")
     return caminho_csv
 
 def enviar_para_postgres(caminho_csv):
