@@ -96,11 +96,11 @@ def enviar_para_postgres(caminho_csv):
     con.execute("INSTALL postgres; LOAD postgres;")
     con.execute(f"ATTACH '{url_banco}' AS meu_postgres (TYPE POSTGRES);")
 
-    print("📊 Importando dados para a tabela no banco...")
-    con.execute(f"""
-        CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos (dados_raw VARCHAR);
-        INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);
-    """)
+    print("📊 Criando a tabela no Supabase (se não existir)...")
+    con.execute("CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos (dados_raw VARCHAR);")
+
+    print("📥 Inserindo os dados do CSV no Supabase...")
+    con.execute(f"INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);")
 
     print("🏆 PROCESSO FINALIZADO! Dados gravados com sucesso no Supabase.")
 
