@@ -45,19 +45,18 @@ def rodar_automacao():
 
         print("⏳ Clicando para baixar o arquivo...")
         
-        # Localiza o elemento do sandbox com mais tolerância
+        # Localiza o elemento do sandbox usando o trecho mais curto
         iframe_sandbox = frame_principal.locator("visual-container-group").filter(
-            has_text="Pressionar Enter para explorar os dadosLista de Processos por"
-        ).locator("iframe[name=\"visual-sandbox\"]").content_frame
+            has_text="Lista de Processos"
+        ).locator("iframe").content_frame
         
         botao_exportar = iframe_sandbox.locator("#sandbox-host")
-        
-        # Espera o botão estar pronto no DOM por até 2 minutos
         botao_exportar.wait_for(state="attached", timeout=120000)
 
-        # Dispara o download usando force=True
+        # Captura o download no contexto completo do navegador
         with page.expect_download(timeout=120000) as download_info:
-            botao_exportar.click(force=True, timeout=120000)
+            # Força o disparo do evento de clique via JS diretamente no elemento
+            botao_exportar.evaluate("node => node.click()")
         
         download = download_info.value
         download.save_as(caminho_csv)
