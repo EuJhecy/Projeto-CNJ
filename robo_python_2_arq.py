@@ -1,7 +1,6 @@
 import os
 import json
 import duckdb
-import pandas as pd
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
