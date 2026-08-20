@@ -1,15 +1,14 @@
 import os
 import json
 import duckdb
+import pandas as pd
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
-# Caixinha para guardar todas as respostas da API
 respostas_powerbi = []
 
 def espiar_resposta(response):
-    """Escuta e captura requisições de dados da API do Power BI"""
-    if "querydata" in response.url or "conceptualschema" in response.url:
+    if "querydata" in response.url:
         try:
             if response.status == 200:
                 dados = response.json()
@@ -36,17 +35,14 @@ def rodar_automacao():
         )
         page = context.new_page()
 
-        # Ativa o escutador de rede
         page.on("response", espiar_resposta)
 
         print("🌐 Acessando o painel do CNJ...")
         page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/", wait_until="domcontentloaded", timeout=90000)
         
-        # Aguarda o Power BI carregar o painel e disparar as requisições de dados
         print("⏳ Aguardando carregamento dos dados de fundo (45s)...")
         page.wait_for_timeout(45000)
 
-        # Navega até a aba Downloads para garantir o disparo da consulta específica
         frame_principal = page.get_by_text("Este navegador não tem").content_frame
         try:
             frame_principal.get_by_role("button", name="Downloads").click()
@@ -59,22 +55,32 @@ def rodar_automacao():
     if not respostas_powerbi:
         raise Exception("Nenhuma requisição de dados foi capturada do Power BI.")
 
-    # Salva os dados num arquivo intermediário
-    caminho_json = os.path.join(pasta_download, "payload_bruto.json")
-    with open(caminho_json, "w", encoding="utf-8") as f:
-        json.dump(respostas_powerbi, f, ensure_ascii=False)
+    # Processamento do Payload
+    linhas_extraidas = []
+    for payload in respostas_powerbi:
+        try:
+            results = payload.get("results", [])
+            for res in results:
+                result = res.get("result", {}).get("data", {}).get("dsr", {}).get("DS", [{}])[0]
+                value_dicts = result.get("PH", [{}])[0].get("DM0", [])
+                for item in value_dicts:
+                    if "G0" in item:
+                        linhas_extraidas.append({"dados_raw": str(item["G0"])})
+        except Exception:
+            continue
 
-    print(f"✅ Payload capturado e salvo em: {caminho_json}")
+    # Criação do CSV estruturado
+    if linhas_extraidas:
+        df = pd.DataFrame(linhas_extraidas)
+        df.to_csv(caminho_csv, index=False)
+        print(f"✅ CSV estruturado gerado com sucesso: {caminho_csv}")
+    else:
+        # Fallback de segurança se o formato interno variar
+        with open(caminho_csv, "w", encoding="utf-8") as f:
+            f.write("conteudo_json\n")
+            f.write(f'"{json.dumps(respostas_powerbi)}"\n')
+        print("⚠️ Payload bruto salvo no CSV como estrutura plana.")
 
-    # Converte o JSON estruturado do Power BI em um CSV limpo via DuckDB
-    con = duckdb.connect()
-    con.execute(f"""
-        COPY (
-            SELECT * FROM read_json_auto('{caminho_json}')
-        ) TO '{caminho_csv}' (HEADER, DELIMITER ',');
-    """)
-
-    print(f"✅ Arquivo CSV gerado com sucesso: {caminho_csv}")
     return caminho_csv
 
 def enviar_para_postgres(caminho_csv):
@@ -93,8 +99,8 @@ def enviar_para_postgres(caminho_csv):
 
     print("📊 Importando dados para a tabela no banco...")
     con.execute(f"""
-        CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos AS 
-        SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);
+        CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos (dados_raw VARCHAR);
+        INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);
     """)
 
     print("🏆 PROCESSO FINALIZADO! Dados gravados com sucesso no Supabase.")
