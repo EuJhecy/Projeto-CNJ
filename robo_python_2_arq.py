@@ -89,6 +89,11 @@ def enviar_para_postgres(caminho_csv):
     if not url_banco:
         raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
 
+    # Remove parâmetros incompatíveis com o driver C++ do DuckDB Postgres
+    if "&ipv6=" in url_banco or "?ipv6=" in url_banco:
+        url_banco = url_banco.split("&ipv6=")[0].split("?ipv6=")[0]
+
+    # Garante o parâmetro obrigatório de SSL
     if "sslmode" not in url_banco:
         url_banco += "&sslmode=require" if "?" in url_banco else "?sslmode=require"
 
@@ -103,7 +108,6 @@ def enviar_para_postgres(caminho_csv):
     con.execute(f"INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);")
 
     print("🏆 PROCESSO FINALIZADO! Dados gravados com sucesso no Supabase.")
-
 if __name__ == "__main__":
     arquivo_baixado = rodar_automacao()
     enviar_para_postgres(arquivo_baixado)
