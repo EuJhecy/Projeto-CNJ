@@ -29,4 +29,4 @@ jobs:
         env:
           # Injeta a credencial salva nos Secrets
           URL_BANCO: ${{ secrets.URL_BANCO }}
-        run: python extracao_dados_cnj.py
+        run: python robo_python_2_arq.py
