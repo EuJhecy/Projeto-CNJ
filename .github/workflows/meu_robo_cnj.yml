@@ -18,9 +18,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências Python
+      - name: Instalar dependências
         run: |
-          pip install playwright duckdb
+          pip install requests duckdb
 
       - name: Instalar navegadores do Playwright (com dependências do Linux)
         run: |
