@@ -6,6 +6,35 @@ import duckdb
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from playwright.sync_api import sync_playwright
 
+def encontrar_e_clicar_cjf(page):
+    """Procura pelo elemento/botão 'CJF' na página principal e em todos os frames."""
+    # Primeiro tenta na página e frames conhecidos
+    frames_para_testar = [page] + page.frames
+    
+    for f in frames_para_testar:
+        try:
+            # Tenta localizar por texto exato ou parcial
+            elemento = f.get_by_text("CJF", exact=True)
+            if elemento.count() > 0:
+                print("🎯 Botão 'CJF' localizado com sucesso!")
+                elemento.first.click(force=True)
+                return True
+        except Exception:
+            continue
+
+    # Fallback: busca por seletor de texto em todos os frames
+    for f in frames_para_testar:
+        try:
+            loc = f.locator("text=CJF")
+            if loc.count() > 0:
+                print("🎯 Botão 'CJF' localizado via locator!")
+                loc.first.click(force=True)
+                return True
+        except Exception:
+            continue
+
+    raise Exception("Não foi possível localizar o botão 'CJF' na tela de downloads.")
+
 def rodar_automacao():
     print("🚀 1. Iniciando navegador e preparando download do CJF.zip...")
     
@@ -32,33 +61,42 @@ def rodar_automacao():
         print("⏳ Aguardando renderização inicial do painel (40s)...")
         page.wait_for_timeout(40000)
 
-        frame = page.get_by_text("Este navegador não tem").content_frame
-
         print("🖱️ Passo 1: Clicando na aba 'Downloads'...")
-        try:
-            frame.get_by_role("button", name="Downloads").click()
-        except Exception:
-            frame.get_by_text("Downloads").click()
+        clicou_downloads = False
+        for f in [page] + page.frames:
+            try:
+                btn = f.get_by_role("button", name="Downloads")
+                if btn.count() > 0:
+                    btn.click(force=True)
+                    clicou_downloads = True
+                    break
+                else:
+                    txt = f.get_by_text("Downloads")
+                    if txt.count() > 0:
+                        txt.first.click(force=True)
+                        clicou_downloads = True
+                        break
+            except Exception:
+                continue
 
-        print("⏳ Aguardando renderização da página de downloads (10s)...")
-        page.wait_for_timeout(10000)
+        if not clicou_downloads:
+            print("⚠️ Aviso: Aba Downloads não localizada pelos métodos padrão, tentando continuar...")
+
+        print("⏳ Aguardando renderização da página de downloads (15s)...")
+        page.wait_for_timeout(15000)
 
         print("🖱️ Passo 2: Clicando na opção 'CJF' para disparar o download real...")
         
-        # O disparo do download ocorre quando clicamos especificamente no botão/link do CJF
-        with page.expect_download(timeout=90000) as download_info:
-            try:
-                # Tenta localizar o elemento/botão escrito CJF
-                frame.get_by_text("CJF").first.click()
-            except Exception:
-                # Fallback por seletor genérico contendo CJF
-                frame.locator("text=CJF").first.click()
+        # O expect_download aguarda a criação do arquivo após o clique no CJF
+        try:
+            with page.expect_download(timeout=90000) as download_info:
+                encontrar_e_clicar_cjf(page)
 
-        download = download_info.value
-        download.save_as(caminho_zip)
-        print(f"📦 Sucesso! Arquivo '{download.suggested_filename}' capturado em: {caminho_zip}")
-
-        browser.close()
+            download = download_info.value
+            download.save_as(caminho_zip)
+            print(f"📦 Sucesso! Arquivo '{download.suggested_filename}' capturado em: {caminho_zip}")
+        finally:
+            browser.close()
 
     # --- UNIFICAÇÃO DOS 6 CSVs REAIS ---
     print("📂 2. Extraindo e empilhando os 6 CSVs do CJF.zip...")
