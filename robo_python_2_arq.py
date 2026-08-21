@@ -1,4 +1,5 @@
 import os
+import shutil
 import zipfile
 import requests
 import duckdb
@@ -18,72 +19,81 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-# 1. Cria a pasta onde vão ficar os arquivos
-pasta_arquivos = "meus_csvs"
-if not os.path.exists(pasta_arquivos):
-    os.makedirs(pasta_arquivos)
-
-print("Iniciando o download dos tribunais...")
-
-# 2. Loop para baixar arquivo por arquivo de cada tribunal
-for tribunal in nome_tribunal:
-    print("Baixando dados do tribunal:", tribunal)
-    
-    # URL da API do CNJ
-    url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
-    
-    # Faz o download
-    resposta = requests.get(url)
-    
-    # Salva o arquivo zip temporário
-    caminho_zip = f"{tribunal}.zip"
-    with open(caminho_zip, "wb") as f:
-        f.write(resposta.content)
-    
-    # Tenta descompactar o arquivo zip
-    try:
-        with zipfile.ZipFile(caminho_zip, 'r') as z:
-            # Extrai cada arquivo e adiciona o nome do tribunal no início
-            for nome_arquivo in z.namelist():
-                nome_novo = f"{tribunal}_{nome_arquivo}"
-                caminho_extraido = os.path.join(pasta_arquivos, nome_novo)
-                
-                with open(caminho_extraido, "wb") as f_out:
-                    f_out.write(z.read(nome_arquivo))
-                    
-        # Apaga o zip para não ocupar espaço
-        os.remove(caminho_zip)
-    except:
-        # Se não for zip, salva como CSV direto
-        caminho_csv = os.path.join(pasta_arquivos, f"{tribunal}_dados.csv")
-        with open(caminho_csv, "wb") as f:
-            f.write(resposta.content)
-        if os.path.exists(caminho_zip):
-            os.remove(caminho_zip)
-
-print("Todos os downloads foram concluídos com sucesso!")
-
-# 3. Enviar todos os CSVs para o banco de dados Supabase
+# 1. Conecta ao banco de dados Supabase via DuckDB
 print("Conectando ao banco de dados...")
 url_banco = os.environ.get("URL_BANCO")
 
-# Conecta no DuckDB
 con = duckdb.connect()
 con.execute("INSTALL postgres;")
 con.execute("LOAD postgres;")
 con.execute(f"ATTACH '{url_banco}' AS banco (TYPE POSTGRES);")
 
-print("Juntando todos os arquivos em uma única tabela...")
-
-# Apaga a tabela antiga se ela já existir
+# Apaga a tabela antiga se já existir para começar a carga limpa
 con.execute("DROP TABLE IF EXISTS banco.dados_cnj_consolidado;")
 
-# Junta todos os CSVs da pasta em uma única tabela
-caminho_todos_csvs = os.path.join(pasta_arquivos, "*.csv")
-con.execute(f"""
-    CREATE TABLE banco.dados_cnj_consolidado AS 
-    SELECT *, filename AS nome_arquivo
-    FROM read_csv_auto('{caminho_todos_csvs}', union_by_name = true);
-""")
+primeira_insercao = True
 
-print("Pronto! Todos os dados foram gravados na tabela do banco.")
+print("Iniciando o download e envio tribunal por tribunal...")
+
+# 2. Loop para processar um tribunal por vez
+for tribunal in nome_tribunal:
+    print(f"Processando tribunal: {tribunal}...")
+    
+    # Cria pasta temporária para o tribunal da vez
+    pasta_temp = "temp_tribunal"
+    os.makedirs(pasta_temp, exist_ok=True)
+    
+    url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
+    
+    try:
+        # Faz o download com timeout de segurança
+        resposta = requests.get(url, timeout=180)
+        
+        caminho_zip = f"{tribunal}.zip"
+        with open(caminho_zip, "wb") as f:
+            f.write(resposta.content)
+        
+        # Tenta descompactar
+        try:
+            with zipfile.ZipFile(caminho_zip, 'r') as z:
+                for nome_arq in z.namelist():
+                    caminho_extraido = os.path.join(pasta_temp, f"{tribunal}_{nome_arq}")
+                    with open(caminho_extraido, "wb") as f_out:
+                        f_out.write(z.read(nome_arq))
+            os.remove(caminho_zip)
+        except:
+            # Se vier direto como CSV
+            with open(os.path.join(pasta_temp, f"{tribunal}_dados.csv"), "wb") as f:
+                f.write(resposta.content)
+            if os.path.exists(caminho_zip):
+                os.remove(caminho_zip)
+
+        # 3. Envia os arquivos deste tribunal para o banco de dados
+        caminho_csvs = os.path.join(pasta_temp, "*.csv")
+        
+        if primeira_insercao:
+            # Cria a tabela com a primeira remessa de dados
+            con.execute(f"""
+                CREATE TABLE banco.dados_cnj_consolidado AS 
+                SELECT *, '{tribunal}' AS tribunal_origem 
+                FROM read_csv_auto('{caminho_csvs}', union_by_name = true, ignore_errors = true);
+            """)
+            primeira_insercao = False
+        else:
+            # Adiciona os novos dados à tabela já existente
+            con.execute(f"""
+                INSERT INTO banco.dados_cnj_consolidado 
+                SELECT *, '{tribunal}' AS tribunal_origem 
+                FROM read_csv_auto('{caminho_csvs}', union_by_name = true, ignore_errors = true);
+            """)
+
+        print(f"✅ Dados do {tribunal} gravados com sucesso no banco!")
+
+    except Exception as e:
+        print(f"⚠️ Erro ao processar tribunal {tribunal}: {e}")
+
+    # 4. LIMPEZA: Apaga os arquivos temporários para liberar o disco para o próximo tribunal
+    if os.path.exists(pasta_temp):
+        shutil.rmtree(pasta_temp)
+
+print("🏆 Processo finalizado! Todos os tribunais foram consolidados no banco de dados.")
