@@ -19,81 +19,80 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-# 1. Conecta ao banco de dados Supabase via DuckDB
-print("Conectando ao banco de dados...")
-url_banco = os.environ.get("URL_BANCO")
+# 1. Pega o token configurado no GitHub
+token = os.environ.get("MOTHERDUCK_TOKEN")
 
-con = duckdb.connect()
-con.execute("INSTALL postgres;")
-con.execute("LOAD postgres;")
-con.execute(f"ATTACH '{url_banco}' AS banco (TYPE POSTGRES);")
+print("Conectando ao MotherDuck na nuvem...")
+# Conecta no banco de dados 'banco_cnj' no MotherDuck
+con = duckdb.connect(f"md:banco_cnj?motherduck_token={token}")
 
-# Apaga a tabela antiga se já existir para começar a carga limpa
-con.execute("DROP TABLE IF EXISTS banco.dados_cnj_consolidado;")
+# 2. Apaga a tabela antiga para atualizar tudo do zero
+print("Limpando tabela antiga...")
+con.execute("DROP TABLE IF EXISTS dados_cnj_consolidado;")
 
-primeira_insercao = True
+primeiro_tribunal = True
 
-print("Iniciando o download e envio tribunal por tribunal...")
+print("Iniciando o download e envio dos 92 tribunais...")
 
-# 2. Loop para processar um tribunal por vez
+# 3. Loop para baixar e salvar tribunal por tribunal
 for tribunal in nome_tribunal:
-    print(f"Processando tribunal: {tribunal}...")
+    print("Processando tribunal:", tribunal)
     
-    # Cria pasta temporária para o tribunal da vez
-    pasta_temp = "temp_tribunal"
-    os.makedirs(pasta_temp, exist_ok=True)
-    
+    # Cria pasta temporária
+    pasta_temp = "arquivos_temp"
+    if not os.path.exists(pasta_temp):
+        os.makedirs(pasta_temp)
+
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
     
     try:
-        # Faz o download com timeout de segurança
-        resposta = requests.get(url, timeout=180)
+        # Faz o download do arquivo
+        resposta = requests.get(url, timeout=120)
         
         caminho_zip = f"{tribunal}.zip"
         with open(caminho_zip, "wb") as f:
             f.write(resposta.content)
-        
-        # Tenta descompactar
+            
+        # Extrai os CSVs
         try:
             with zipfile.ZipFile(caminho_zip, 'r') as z:
-                for nome_arq in z.namelist():
-                    caminho_extraido = os.path.join(pasta_temp, f"{tribunal}_{nome_arq}")
+                for nome_arquivo in z.namelist():
+                    caminho_extraido = os.path.join(pasta_temp, f"{tribunal}_{nome_arquivo}")
                     with open(caminho_extraido, "wb") as f_out:
-                        f_out.write(z.read(nome_arq))
+                        f_out.write(z.read(nome_arquivo))
             os.remove(caminho_zip)
         except:
             # Se vier direto como CSV
-            with open(os.path.join(pasta_temp, f"{tribunal}_dados.csv"), "wb") as f:
+            caminho_csv = os.path.join(pasta_temp, f"{tribunal}_dados.csv")
+            with open(caminho_csv, "wb") as f:
                 f.write(resposta.content)
             if os.path.exists(caminho_zip):
                 os.remove(caminho_zip)
 
-        # 3. Envia os arquivos deste tribunal para o banco de dados
-        caminho_csvs = os.path.join(pasta_temp, "*.csv")
-        
-        if primeira_insercao:
-            # Cria a tabela com a primeira remessa de dados
+        caminho_todos = os.path.join(pasta_temp, "*.csv")
+
+        # 4. Grava direto no MotherDuck
+        if primeiro_tribunal:
             con.execute(f"""
-                CREATE TABLE banco.dados_cnj_consolidado AS 
+                CREATE TABLE dados_cnj_consolidado AS 
                 SELECT *, '{tribunal}' AS tribunal_origem 
-                FROM read_csv_auto('{caminho_csvs}', union_by_name = true, ignore_errors = true);
+                FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
             """)
-            primeira_insercao = False
+            primeiro_tribunal = False
         else:
-            # Adiciona os novos dados à tabela já existente
             con.execute(f"""
-                INSERT INTO banco.dados_cnj_consolidado 
+                INSERT INTO dados_cnj_consolidado 
                 SELECT *, '{tribunal}' AS tribunal_origem 
-                FROM read_csv_auto('{caminho_csvs}', union_by_name = true, ignore_errors = true);
+                FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
             """)
 
-        print(f"✅ Dados do {tribunal} gravados com sucesso no banco!")
+        print(f"Sucesso ao salvar {tribunal} no MotherDuck!")
 
-    except Exception as e:
-        print(f"⚠️ Erro ao processar tribunal {tribunal}: {e}")
+    except Exception as erro:
+        print(f"Erro no tribunal {tribunal}: {erro}")
 
-    # 4. LIMPEZA: Apaga os arquivos temporários para liberar o disco para o próximo tribunal
+    # 5. Apaga a pasta temporária para liberar memória do computador
     if os.path.exists(pasta_temp):
         shutil.rmtree(pasta_temp)
 
-print("🏆 Processo finalizado! Todos os tribunais foram consolidados no banco de dados.")
+print("🏆 FINALIZADO! Todos os tribunais foram salvos com sucesso no MotherDuck.")
