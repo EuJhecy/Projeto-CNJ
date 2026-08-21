@@ -1,80 +1,89 @@
 import os
-import io
 import zipfile
 import requests
 import duckdb
 
-# URL do endpoint que você encontrou
-URL_CNJ = "https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal=CJF&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
+# Lista dos 92 tribunais
+nome_tribunal = [
+    'CJF','STJ','STM','TJAC','TJAL','TJAM','TJAP','TJBA','TJCE','TJDFT',
+    'TJES','TJGO','TJMA','TJMG','TJMMG','TJMRS','TJMS','TJMSP','TJMT',
+    'TJPA','TJPB','TJPE','TJPI','TJPR','TJRJ','TJRN','TJRO','TJRR','TJRS',
+    'TJSC','TJSE','TJSP','TJTO','TRE-AC','TRE-AL','TRE-AM','TRE-AP',
+    'TRE-BA','TRE-CE','TRE-DF','TRE-ES','TRE-GO','TRE-MA','TRE-MG',
+    'TRE-MS','TRE-MT','TRE-PA','TRE-PB','TRE-PE','TRE-PI','TRE-PR',
+    'TRE-RJ','TRE-RN','TRE-RO','TRE-RR','TRE-RS','TRE-SC','TRE-SE',
+    'TRE-SP','TRE-TO','TRF1','TRF2','TRF3','TRF4','TRF5','TRF6','TRT1',
+    'TRT10','TRT11','TRT12','TRT13','TRT14','TRT15','TRT16','TRT17',
+    'TRT18','TRT19','TRT2','TRT20','TRT21','TRT22','TRT23','TRT24',
+    'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
+]
 
-def baixar_e_extrair_dados(url, pasta_destino="./downloads"):
-    os.makedirs(pasta_destino, exist_ok=True)
+# 1. Cria a pasta onde vão ficar os arquivos
+pasta_arquivos = "meus_csvs"
+if not os.path.exists(pasta_arquivos):
+    os.makedirs(pasta_arquivos)
+
+print("Iniciando o download dos tribunais...")
+
+# 2. Loop para baixar arquivo por arquivo de cada tribunal
+for tribunal in nome_tribunal:
+    print("Baixando dados do tribunal:", tribunal)
     
-    print("🚀 Baixando dados direto da API do CNJ...")
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    # URL da API do CNJ
+    url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
     
-    response = requests.get(url, headers=headers, stream=True, timeout=300)
-    response.raise_for_status()
-
-    # Verifica se o arquivo retornado é um ZIP
-    conteudo = response.content
-    pasta_csvs = os.path.join(pasta_destino, "csvs")
-    os.makedirs(pasta_csvs, exist_ok=True)
-
+    # Faz o download
+    resposta = requests.get(url)
+    
+    # Salva o arquivo zip temporário
+    caminho_zip = f"{tribunal}.zip"
+    with open(caminho_zip, "wb") as f:
+        f.write(resposta.content)
+    
+    # Tenta descompactar o arquivo zip
     try:
-        # Tenta descompactar como ZIP
-        with zipfile.ZipFile(io.BytesIO(conteudo)) as z:
-            print("📦 Descompactando arquivos ZIP...")
-            z.extractall(pasta_csvs)
-            print(f"✅ Arquivos descompactados em: {pasta_csvs}")
-    except zipfile.BadZipFile:
-        # Se não for zip, salva como CSV único
-        print("📄 Arquivo recebido é um CSV direto.")
-        caminho_csv = os.path.join(pasta_csvs, "dados_cnj.csv")
+        with zipfile.ZipFile(caminho_zip, 'r') as z:
+            # Extrai cada arquivo e adiciona o nome do tribunal no início
+            for nome_arquivo in z.namelist():
+                nome_novo = f"{tribunal}_{nome_arquivo}"
+                caminho_extraido = os.path.join(pasta_arquivos, nome_novo)
+                
+                with open(caminho_extraido, "wb") as f_out:
+                    f_out.write(z.read(nome_arquivo))
+                    
+        # Apaga o zip para não ocupar espaço
+        os.remove(caminho_zip)
+    except:
+        # Se não for zip, salva como CSV direto
+        caminho_csv = os.path.join(pasta_arquivos, f"{tribunal}_dados.csv")
         with open(caminho_csv, "wb") as f:
-            f.write(conteudo)
+            f.write(resposta.content)
+        if os.path.exists(caminho_zip):
+            os.remove(caminho_zip)
 
-    return pasta_csvs
+print("Todos os downloads foram concluídos com sucesso!")
 
-def enviar_para_postgres(pasta_csvs):
-    print("🐘 Conectando ao PostgreSQL (Supabase) via DuckDB...")
-    
-    url_banco = os.getenv("URL_BANCO")
-    if not url_banco:
-        raise ValueError("A variável de ambiente URL_BANCO não foi configurada.")
+# 3. Enviar todos os CSVs para o banco de dados Supabase
+print("Conectando ao banco de dados...")
+url_banco = os.environ.get("URL_BANCO")
 
-    if "sslmode" not in url_banco:
-        url_banco += "&sslmode=require" if "?" in url_banco else "?sslmode=require"
+# Conecta no DuckDB
+con = duckdb.connect()
+con.execute("INSTALL postgres;")
+con.execute("LOAD postgres;")
+con.execute(f"ATTACH '{url_banco}' AS banco (TYPE POSTGRES);")
 
-    con = duckdb.connect()
-    con.execute("INSTALL postgres; LOAD postgres;")
-    con.execute(f"ATTACH '{url_banco}' AS meu_postgres (TYPE POSTGRES);")
+print("Juntando todos os arquivos em uma única tabela...")
 
-    # Lista todos os CSVs baixados/extraídos
-    arquivos_csv = [f for f in os.listdir(pasta_csvs) if f.endswith(".csv")]
-    
-    if not arquivos_csv:
-        print("⚠️ Nenhum arquivo CSV encontrado na pasta.")
-        return
+# Apaga a tabela antiga se ela já existir
+con.execute("DROP TABLE IF EXISTS banco.dados_cnj_consolidado;")
 
-    for arquivo in arquivos_csv:
-        caminho_completo = os.path.join(pasta_csvs, arquivo)
-        # Limpa o nome do arquivo para virar o nome da tabela no banco
-        nome_tabela = f"cnj_{arquivo.replace('.csv', '').replace('-', '_').replace(' ', '_').lower()}"
-        
-        print(f"📊 Gravando '{arquivo}' na tabela 'meu_postgres.{nome_tabela}'...")
-        
-        # Sobrescreve a tabela com os novos dados
-        con.execute(f"DROP TABLE IF EXISTS meu_postgres.{nome_tabela};")
-        con.execute(f"""
-            CREATE TABLE meu_postgres.{nome_tabela} AS 
-            SELECT * FROM read_csv_auto('{caminho_completo}', ignore_errors=true);
-        """)
+# Junta todos os CSVs da pasta em uma única tabela
+caminho_todos_csvs = os.path.join(pasta_arquivos, "*.csv")
+con.execute(f"""
+    CREATE TABLE banco.dados_cnj_consolidado AS 
+    SELECT *, filename AS nome_arquivo
+    FROM read_csv_auto('{caminho_todos_csvs}', union_by_name = true);
+""")
 
-    print("🏆 PROCESSO FINALIZADO! Todas as tabelas foram criadas/atualizadas com sucesso.")
-
-if __name__ == "__main__":
-    pasta_com_dados = baixar_e_extrair_dados(URL_CNJ)
-    enviar_para_postgres(pasta_com_dados)
+print("Pronto! Todos os dados foram gravados na tabela do banco.")
