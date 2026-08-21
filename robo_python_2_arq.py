@@ -23,8 +23,12 @@ nome_tribunal = [
 token = os.environ.get("MOTHERDUCK_TOKEN")
 
 print("Conectando ao MotherDuck na nuvem...")
-# Conecta no banco de dados 'banco_cnj' no MotherDuck
-con = duckdb.connect(f"md:banco_cnj?motherduck_token={token}")
+# Conecta na sua conta MotherDuck
+con = duckdb.connect(f"md:?motherduck_token={token}")
+
+# Garante que o banco de dados 'banco_cnj' exista e entra nele
+con.execute("CREATE DATABASE IF NOT EXISTS banco_cnj;")
+con.execute("USE banco_cnj;")
 
 # 2. Apaga a tabela antiga para atualizar tudo do zero
 print("Limpando tabela antiga...")
