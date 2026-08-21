@@ -91,9 +91,9 @@ def rodar_automacao():
 def enviar_para_postgres(caminho_csv):
     print("🐘 Conectando ao PostgreSQL (Supabase) via DuckDB...")
     
-    url_banco = os.getenv("URL_BANCO")
+    url_banco = os.getenv("URL_BANCO1")
     if not url_banco:
-        raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
+        raise ValueError("A variável de ambiente URL_BANCO1 não foi encontrada.")
 
     url_banco = url_banco.strip().strip("'").strip('"')
     url_banco = re.sub(r'[\[\]]', '', url_banco)
