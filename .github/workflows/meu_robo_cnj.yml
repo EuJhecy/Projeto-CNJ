@@ -24,6 +24,6 @@ jobs:
 
       - name: Rodar o script Python
         env:
-          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          MOTHERDUCK_TOKEN: ${{ secrets.TOKEN_MOTHERDUCK }}
         run: |
           python robo_python_2_arq.py
