@@ -1,29 +1,17 @@
 import os
-import json
+import re
 import csv
+import zipfile
 import duckdb
 from datetime import datetime
 from playwright.sync_api import sync_playwright
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-
-respostas_powerbi = []
-
-def espiar_resposta(response):
-    if "querydata" in response.url:
-        try:
-            if response.status == 200:
-                dados = response.json()
-                respostas_powerbi.append(dados)
-                print("⚡ Dados do Power BI capturados da rede!")
-        except Exception:
-            pass
 
 def rodar_automacao():
-    print("🚀 Iniciando automação via interceptação de API...")
+    print("🚀 Iniciando automação de download do ZIP...")
     
-    pasta_download = "./downloads"
+    pasta_download = os.path.abspath("./downloads")
     os.makedirs(pasta_download, exist_ok=True)
-    caminho_csv = os.path.join(pasta_download, "dados_cnj.csv")
+    caminho_csv_final = os.path.join(pasta_download, "dados_cnj_unificados.csv")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -32,57 +20,73 @@ def rodar_automacao():
         )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            locale="pt-BR"
+            locale="pt-BR",
+            accept_downloads=True
         )
         page = context.new_page()
-
-        page.on("response", espiar_resposta)
 
         print("🌐 Acessando o painel do CNJ...")
         page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/", wait_until="domcontentloaded", timeout=90000)
         
-        print("⏳ Aguardando carregamento dos dados de fundo (45s)...")
+        print("⏳ Aguardando carregamento do painel (45s)...")
         page.wait_for_timeout(45000)
 
         frame_principal = page.get_by_text("Este navegador não tem").content_frame
-        try:
-            frame_principal.get_by_role("button", name="Downloads").click()
-            page.wait_for_timeout(15000)
-        except Exception as e:
-            print(f"Aviso ao clicar na aba: {e}")
+        
+        # Intercepta e escuta a ação de download nativa do navegador
+        with page.expect_download(timeout=60000) as download_info:
+            try:
+                print("🖱️ Clicando no botão de Download...")
+                frame_principal.get_by_role("button", name="Downloads").click()
+            except Exception as e:
+                print(f"Tentando clique alternativo no botão: {e}")
+                frame_principal.get_by_text("Downloads").click()
+
+        download = download_info.value
+        caminho_zip = os.path.join(pasta_download, download.suggested_filename)
+        download.save_as(caminho_zip)
+        print(f"📦 Arquivo ZIP baixado com sucesso: {caminho_zip}")
 
         browser.close()
 
-    if not respostas_powerbi:
-        raise Exception("Nenhuma requisição de dados foi capturada do Power BI.")
+    # Processamento e unificação dos CSVs dentro do ZIP
+    print("📂 Extraindo e empilhando os arquivos CSV do ZIP...")
+    
+    cabecalho = None
+    todas_as_linhas = []
 
-    # Processamento e extração nativa em Python
-    linhas_extraidas = []
-    for payload in respostas_powerbi:
-        try:
-            results = payload.get("results", [])
-            for res in results:
-                result = res.get("result", {}).get("data", {}).get("dsr", {}).get("DS", [{}])[0]
-                value_dicts = result.get("PH", [{}])[0].get("DM0", [])
-                for item in value_dicts:
-                    if "G0" in item:
-                        linhas_extraidas.append([str(item["G0"])])
-        except Exception:
-            continue
+    with zipfile.ZipFile(caminho_zip, 'r') as zip_ref:
+        for nome_arquivo in zip_ref.namelist():
+            if nome_arquivo.endswith('.csv'):
+                print(f"  📄 Processando tabela: {nome_arquivo}")
+                with zip_ref.open(nome_arquivo) as f:
+                    # Lê o CSV decodificando latin-1 / utf-8 com separador ';'
+                    conteudo = f.read().decode('utf-8-sig', errors='ignore').splitlines()
+                    leitor = csv.reader(conteudo, delimiter=';')
+                    
+                    linhas = list(leitor)
+                    if not linhas:
+                        continue
 
-    # Escreve o CSV usando o módulo csv nativo
-    with open(caminho_csv, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["dados_raw"])  # Cabeçalho
-        if linhas_extraidas:
-            writer.writerows(linhas_extraidas)
-        else:
-            # Fallback seguro caso o payload venha num formato diferente
-            writer.writerow([json.dumps(respostas_powerbi)])
+                    # Define o cabeçalho na primeira leitura
+                    if cabecalho is None:
+                        cabecalho = linhas[0] + ["origem_tabela"]
 
-    print(f"✅ CSV estruturado gerado com sucesso: {caminho_csv}")
-    return caminho_csv
+                    # Adiciona os dados registrando a tabela de origem
+                    nome_limpo = os.path.splitext(nome_arquivo)[0]
+                    for linha in linhas[1:]:
+                        if linha:  # ignora linhas vazias
+                            todas_as_linhas.append(linha + [nome_limpo])
 
+    # Grava o CSV unificado usando vírgula como separador padrão
+    with open(caminho_csv_final, "w", newline="", encoding="utf-8") as f:
+        escritor = csv.writer(f)
+        if cabecalho:
+            escritor.writerow(cabecalho)
+        escritor.writerows(todas_as_linhas)
+
+    print(f"✅ CSV unificado criado com {len(todas_as_linhas)} registros: {caminho_csv_final}")
+    return caminho_csv_final
 
 def enviar_para_postgres(caminho_csv):
     print("🐘 Conectando ao PostgreSQL (Supabase) via DuckDB...")
@@ -91,41 +95,36 @@ def enviar_para_postgres(caminho_csv):
     if not url_banco:
         raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
 
-    # Limpa a URL removendo parâmetros incompatíveis com o DuckDB (como ipv6)
-    parsed = urlparse(url_banco)
-    query_params = parse_qs(parsed.query)
+    url_banco = url_banco.strip().strip("'").strip('"')
+    url_banco = re.sub(r'[\[\]]', '', url_banco)
     
-    # Mantém apenas os parâmetros aceitos pelo driver C++ do DuckDB
-    params_validos = {}
-    if "sslmode" in query_params:
-        params_validos["sslmode"] = query_params["sslmode"][0]
-    else:
-        params_validos["sslmode"] = "require"
+    if "&ipv6=" in url_banco or "?ipv6=" in url_banco:
+        url_banco = re.split(r'[&?]ipv6=', url_banco)[0]
 
-    new_query = urlencode(params_validos)
-    url_limpa = urlunparse((
-        parsed.scheme,
-        parsed.netloc,
-        parsed.path,
-        parsed.params,
-        new_query,
-        parsed.fragment
-    ))
+    if "sslmode" not in url_banco:
+        url_banco += "&sslmode=require" if "?" in url_banco else "?sslmode=require"
 
     con = duckdb.connect()
     con.execute("INSTALL postgres; LOAD postgres;")
     
     print("🔌 Anexando banco Supabase...")
-    con.execute(f"ATTACH '{url_limpa}' AS meu_postgres (TYPE POSTGRES);")
+    con.execute(f"ATTACH '{url_banco}' AS meu_postgres (TYPE POSTGRES);")
 
-    print("📊 Criando a tabela no Supabase (se não existir)...")
-    con.execute("CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos (dados_raw VARCHAR);")
+    print("📊 Criando/Recriando a tabela unificada no Supabase...")
+    # Cria a tabela dinamicamente a partir do layout real das colunas do CSV
+    con.execute(f"""
+        CREATE TABLE IF NOT EXISTS meu_postgres.dados_cnj_processos AS 
+        SELECT * FROM read_csv_auto('{caminho_csv}') LIMIT 0;
+    """)
 
-    print("📥 Inserindo os dados do CSV no Supabase...")
-    con.execute(f"INSERT INTO meu_postgres.dados_cnj_processos SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true);")
+    print("📥 Inserindo todas as tabelas empilhadas no Supabase...")
+    con.execute(f"""
+        INSERT INTO meu_postgres.dados_cnj_processos 
+        SELECT * FROM read_csv_auto('{caminho_csv}');
+    """)
 
-    print("🏆 PROCESSO FINALIZADO! Dados gravados com sucesso no Supabase.")
+    print("🏆 PROCESSO FINALIZADO! Todos os dados empilhados no Supabase.")
 
 if __name__ == "__main__":
-    arquivo_baixado = rodar_automacao()
-    enviar_para_postgres(arquivo_baixado)
+    arquivo_unificado = rodar_automacao()
+    enviar_para_postgres(arquivo_unificado)
