@@ -1,0 +1,40 @@
+name: Executar Robô CNJ
+
+on:
+  workflow_dispatch: # Permite rodar manualmente
+  # schedule:
+  #   - cron: '0 3 * * *' # Exemplo: roda todo dia às 03h
+
+jobs:
+  executar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências Python
+        run: |
+          pip install playwright duckdb
+
+      - name: Instalar navegadores do Playwright (com dependências do Linux)
+        run: |
+          playwright install chromium --with-deps
+
+      - name: Rodar script
+        env:
+          URL_BANCO: ${{ secrets.URL_BANCO1 }}
+        run: |
+          python robo_python_2_arq.py
+
+      - name: Salvar Screenshot em caso de falha (Debug)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots
+          path: debug_erro_download.png
