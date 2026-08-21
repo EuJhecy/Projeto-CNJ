@@ -1,16 +1,16 @@
 name: Executar Robô CNJ
 
 on:
-  workflow_dispatch: # Permite rodar manualmente
+  workflow_dispatch: # Permite rodar manualmente pelo botão "Run workflow"
   # schedule:
-  #   - cron: '0 3 * * *' # Exemplo: roda todo dia às 03h
+  #   - cron: '0 6 * * *' # roda todo dia às 03h da manhã - horário de Brasília
 
 jobs:
   executar:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout do código
+      - name: Baixar código do repositório
         uses: actions/checkout@v4
 
       - name: Configurar Python
@@ -18,12 +18,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências
+      - name: Instalar bibliotecas
         run: |
           pip install requests duckdb
 
-      - name: Rodar script
+      - name: Rodar o script Python
         env:
-          URL_BANCO: ${{ secrets.URL_BANCO }}
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
         run: |
           python robo_python_2_arq.py
