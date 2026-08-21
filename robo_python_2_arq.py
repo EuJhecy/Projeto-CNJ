@@ -29,23 +29,34 @@ def rodar_automacao():
         print("🌐 Acessando o painel do CNJ...")
         page.goto("https://justica-em-numeros.cnj.jus.br/painel-estatisticas/", wait_until="domcontentloaded", timeout=90000)
         
-        print("⏳ Aguardando renderização dos componentes (40s)...")
+        print("⏳ Aguardando renderização inicial do painel (40s)...")
         page.wait_for_timeout(40000)
 
         frame = page.get_by_text("Este navegador não tem").content_frame
 
-        print("🖱️ Clicando na aba Downloads e capturando o arquivo ZIP...")
+        print("🖱️ Passo 1: Clicando na aba 'Downloads'...")
+        try:
+            frame.get_by_role("button", name="Downloads").click()
+        except Exception:
+            frame.get_by_text("Downloads").click()
+
+        print("⏳ Aguardando renderização da página de downloads (10s)...")
+        page.wait_for_timeout(10000)
+
+        print("🖱️ Passo 2: Clicando na opção 'CJF' para disparar o download real...")
         
-        # O expect_download captura o arquivo ZIP gerado via Blob pelo Power BI
+        # O disparo do download ocorre quando clicamos especificamente no botão/link do CJF
         with page.expect_download(timeout=90000) as download_info:
             try:
-                frame.get_by_role("button", name="Downloads").click()
+                # Tenta localizar o elemento/botão escrito CJF
+                frame.get_by_text("CJF").first.click()
             except Exception:
-                frame.get_by_text("Downloads").click()
+                # Fallback por seletor genérico contendo CJF
+                frame.locator("text=CJF").first.click()
 
         download = download_info.value
         download.save_as(caminho_zip)
-        print(f"📦 Sucesso! Arquivo '{download.suggested_filename}' baixado em: {caminho_zip}")
+        print(f"📦 Sucesso! Arquivo '{download.suggested_filename}' capturado em: {caminho_zip}")
 
         browser.close()
 
@@ -96,7 +107,6 @@ def enviar_para_postgres(caminho_csv):
     if not url_banco:
         raise ValueError("A variável de ambiente URL_BANCO não foi encontrada.")
 
-    # Tratamento da URL para compatibilidade com DuckDB
     parsed = urlparse(url_banco)
     query_params = parse_qs(parsed.query)
     
