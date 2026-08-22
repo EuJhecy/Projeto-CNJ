@@ -3,6 +3,7 @@ import shutil
 import zipfile
 import requests
 import duckdb
+from huggingface_hub import HfApi
 
 # Lista dos 92 tribunais
 nome_tribunal = [
@@ -19,60 +20,32 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-# Lista da 29 colunas necessárias
+# Configurações do Hugging Face
+HF_TOKEN = os.environ.get("HF_TOKEN")
+REPO_ID = "SEU_USUARIO/dados-cnj"  # Substitua pelo seu usuário e nome do dataset
+
+api = HfApi(token=HF_TOKEN)
+con = duckdb.connect()
+
 colunas_selecionadas = """
-    "Tribunal",
-    "Grau",
-    "Nome Orgao",
-    "UF",
-    "Municipio",
-    "Ano",
-    "Mes",
-    "Processo",
-    "Codigo da Ultima classe",
-    "Nome da Ultima classe",
-    "Codigos classes",
-    "Codigos assuntos",
-    "Data de referencia",
-    "Formato",
-    "id_procedimento",
-    "Procedimento",
-    "Recurso",
-    "Codigo Orgao",
-    "id_municipio",
-    "Polo ativo",
-    "Polo ativo - CNPJ",
-    "Polo ativo - Natureza juridica",
-    "Polo ativo - CNAE",
-    "Polo passivo",
-    "Polo passivo - CNPJ",
-    "Polo passivo - Natureza juridica",
-    "Polo passivo - CNAE",
-    "Poder publico",
-    "Materias"
+    "Tribunal", "Grau", "Nome Orgao", "UF", "Municipio", "Ano", "Mes",
+    "Processo", "Codigo da Ultima classe", "Nome da Ultima classe",
+    "Codigos classes", "Codigos assuntos", "Data de referencia", "Formato",
+    "id_procedimento", "Procedimento", "Recurso", "Codigo Orgao",
+    "id_municipio", "Polo ativo", "Polo ativo - CNPJ",
+    "Polo ativo - Natureza juridica", "Polo ativo - CNAE", "Polo passivo",
+    "Polo passivo - CNPJ", "Polo passivo - Natureza juridica",
+    "Polo passivo - CNAE", "Poder publico", "Materias"
 """
 
-print("Conectando ao MotherDuck na nuvem...", flush=True)
-con = duckdb.connect("md:")
-
-# Garante que o banco de dados 'banco_cnj' exista e entra nele
-con.execute("CREATE DATABASE IF NOT EXISTS banco_cnj;")
-con.execute("USE banco_cnj;")
-
-# Apaga a tabela anterior para recriar apenas com as colunas certas
-print("Limpando tabela antiga para liberar espaço...", flush=True)
-con.execute("DROP TABLE IF EXISTS dados_cnj_consolidado;")
-
-primeiro_tribunal = True
-
-print("Iniciando o download e envio dos 92 tribunais (29 colunas)...", flush=True)
+print("Iniciando processamento dos 92 tribunais para Parquet no Hugging Face...", flush=True)
 
 for tribunal in nome_tribunal:
-    print(f"Processando tribunal: {tribunal}", flush=True)
+    print(f"--- Baixando e processando: {tribunal} ---", flush=True)
     
     pasta_temp = "arquivos_temp"
     os.makedirs(pasta_temp, exist_ok=True)
-
+    
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
     
     try:
@@ -95,29 +68,34 @@ for tribunal in nome_tribunal:
             if os.path.exists(caminho_zip):
                 os.remove(caminho_zip)
 
-        caminho_todos = os.path.join(pasta_temp, "*.csv")
+        caminho_todos_csv = os.path.join(pasta_temp, "*.csv")
+        arquivo_parquet_local = f"{tribunal}.parquet"
 
-        # Salva apenas as 29 colunas
-        if primeiro_tribunal:
-            con.execute(f"""
-                CREATE TABLE dados_cnj_consolidado AS 
+        # Converte CSV para Parquet comprimido com ZSTD
+        con.execute(f"""
+            COPY (
                 SELECT {colunas_selecionadas} 
-                FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
-            """)
-            primeiro_tribunal = False
-        else:
-            con.execute(f"""
-                INSERT INTO dados_cnj_consolidado 
-                SELECT {colunas_selecionadas} 
-                FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
-            """)
+                FROM read_csv_auto('{caminho_todos_csv}', union_by_name = true, ignore_errors = true)
+            ) TO '{arquivo_parquet_local}' (FORMAT PARQUET, COMPRESSION ZSTD);
+        """)
 
-        print(f"Sucesso ao salvar {tribunal} no MotherDuck!", flush=True)
+        # Envia o arquivo Parquet direto para o Hugging Face
+        api.upload_file(
+            path_or_fileobj=arquivo_parquet_local,
+            path_in_repo=f"data/{tribunal}.parquet",
+            repo_id=REPO_ID,
+            repo_type="dataset"
+        )
+
+        print(f"✅ {tribunal}.parquet enviado com sucesso!", flush=True)
+
+        if os.path.exists(arquivo_parquet_local):
+            os.remove(arquivo_parquet_local)
 
     except Exception as erro:
-        print(f"Erro no tribunal {tribunal}: {erro}", flush=True)
+        print(f"❌ Erro no {tribunal}: {erro}", flush=True)
 
     if os.path.exists(pasta_temp):
         shutil.rmtree(pasta_temp)
 
-print("🏆 FINALIZADO! Todos os tribunais foram salvos com sucesso.", flush=True)
+print("🏆 Carga completa de todos os tribunais finalizada no Hugging Face!", flush=True)
