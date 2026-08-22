@@ -3,7 +3,7 @@ name: Executar Robô CNJ
 on:
   workflow_dispatch:
   # schedule:
-  #   - cron: '0 6 * * *' # Roda o robô todo dia às 3h da manhâ (horário de bsb)
+  #   - cron: '0 6 * * *' # Roda o robô todo dia às 3h da manhã (horário de bsb)
 
 jobs:
   executar:
@@ -25,7 +25,7 @@ jobs:
 
       - name: Rodar o script Python
         env:
-          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          motherduck_token: ${{ secrets.token_motherduck }}
           PYTHONUNBUFFERED: "1" # Força os prints a aparecerem na hora no terminal
         run: |
           python -u robo_python_2_arq.py
