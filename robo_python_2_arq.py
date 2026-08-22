@@ -22,7 +22,7 @@ nome_tribunal = [
 
 # Configurações do Hugging Face
 HF_TOKEN = os.environ.get("HF_TOKEN")
-REPO_ID = "SEU_USUARIO/dados-cnj"  # Substitua pelo seu usuário e nome do dataset
+REPO_ID = "EuJhecy/dados-cnj"
 
 api = HfApi(token=HF_TOKEN)
 con = duckdb.connect()
