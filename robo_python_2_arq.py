@@ -40,7 +40,7 @@ print("Iniciando o download e envio dos 92 tribunais...")
 
 # 3. Loop para baixar e salvar tribunal por tribunal
 for tribunal in nome_tribunal:
-    print("Processando tribunal:", tribunal)
+    print("Processando tribunal:", tribunal, flush=True)
     
     # Cria pasta temporária
     pasta_temp = "arquivos_temp"
@@ -90,7 +90,7 @@ for tribunal in nome_tribunal:
                 FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
             """)
 
-        print(f"Sucesso ao salvar {tribunal} no MotherDuck!")
+        print(f"Sucesso ao salvar {tribunal} no MotherDuck!", flush=True)
 
     except Exception as erro:
         print(f"Erro no tribunal {tribunal}: {erro}")
