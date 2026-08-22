@@ -20,11 +20,11 @@ nome_tribunal = [
 ]
 
 # 1. Pega o token configurado no GitHub
-token = os.environ.get("MOTHERDUCK_TOKEN")
+token = os.environ.get("TOKEN_MOTHERDUCK")
 
 print("Conectando ao MotherDuck na nuvem...")
 # Conecta na sua conta MotherDuck
-con = duckdb.connect(f"md:?motherduck_token={token}")
+con = duckdb.connect(f"md:?token_motherduck={token}")
 
 # Garante que o banco de dados 'banco_cnj' exista e entra nele
 con.execute("CREATE DATABASE IF NOT EXISTS banco_cnj;")
