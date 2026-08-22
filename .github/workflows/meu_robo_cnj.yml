@@ -1,14 +1,14 @@
-name: Executar Robô CNJ
+name: Executar Robô CNJ - Hugging Face
 
 on:
   workflow_dispatch:
   # schedule:
-  #   - cron: '0 6 * * *' # Roda o robô todo dia às 3h da manhã (horário de bsb)
+  #   - cron: '0 6 * * *' # Roda diariamente
 
 jobs:
   executar:
     runs-on: ubuntu-latest
-    timeout-minutes: 360 # Permite rodar até 6 horas sem ser cancelado
+    timeout-minutes: 360 # Permite rodar até 6 horas
 
     steps:
       - name: Baixar código do repositório
@@ -21,11 +21,11 @@ jobs:
 
       - name: Instalar bibliotecas
         run: |
-          pip install requests duckdb
+          pip install requests duckdb huggingface_hub
 
       - name: Rodar o script Python
         env:
-          motherduck_token: ${{ secrets.token_motherduck }}
-          PYTHONUNBUFFERED: "1" # Força os prints a aparecerem na hora no terminal
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          PYTHONUNBUFFERED: "1"
         run: |
           python -u robo_python_2_arq.py
