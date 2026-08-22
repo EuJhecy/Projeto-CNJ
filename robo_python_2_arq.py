@@ -5,7 +5,6 @@ import requests
 import duckdb
 from huggingface_hub import HfApi
 
-# Lista dos 92 tribunais
 nome_tribunal = [
     'CJF','STJ','STM','TJAC','TJAL','TJAM','TJAP','TJBA','TJCE','TJDFT',
     'TJES','TJGO','TJMA','TJMG','TJMMG','TJMRS','TJMS','TJMSP','TJMT',
@@ -20,12 +19,10 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-# Configurações do Hugging Face
 HF_TOKEN = os.environ.get("HF_TOKEN")
-REPO_ID = "EuJhecy/dados-cnj"
+REPO_ID = "SEU_USUARIO/dados-cnj"  # Substitua pelo seu repositório
 
 api = HfApi(token=HF_TOKEN)
-con = duckdb.connect()
 
 colunas_selecionadas = """
     "Tribunal", "Grau", "Nome Orgao", "UF", "Municipio", "Ano", "Mes",
@@ -38,22 +35,35 @@ colunas_selecionadas = """
     "Polo passivo - CNAE", "Poder publico", "Materias"
 """
 
-print("Iniciando processamento dos 92 tribunais para Parquet no Hugging Face...", flush=True)
+con = duckdb.connect()
+con.execute("SET max_memory = '5GB';")
+con.execute("SET preserve_insertion_order = false;")
+
+print("🚀 Iniciando rotina diária de atualização do Data Lake...", flush=True)
 
 for tribunal in nome_tribunal:
-    print(f"--- Baixando e processando: {tribunal} ---", flush=True)
+    caminho_hf = f"data/{tribunal}.parquet"
+    print(f"\n--- Sincronizando: {tribunal} ---", flush=True)
     
     pasta_temp = "arquivos_temp"
     os.makedirs(pasta_temp, exist_ok=True)
     
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
-    
+    caminho_zip = f"{tribunal}.zip"
+
     try:
-        resposta = requests.get(url, timeout=120)
-        caminho_zip = f"{tribunal}.zip"
-        with open(caminho_zip, "wb") as f:
-            f.write(resposta.content)
-            
+        # Download com streaming para não estourar RAM e manter logs ativos
+        with requests.get(url, stream=True, timeout=600) as r:
+            r.raise_for_status()
+            baixados = 0
+            with open(caminho_zip, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024 * 16):
+                    if chunk:
+                        f.write(chunk)
+                        baixados += len(chunk)
+                        if baixados % (1024 * 1024 * 64) == 0:  # log a cada 64MB
+                            print(f"Baixando: {baixados / (1024*1024):.0f} MB...", flush=True)
+
         try:
             with zipfile.ZipFile(caminho_zip, 'r') as z:
                 for nome_arquivo in z.namelist():
@@ -61,17 +71,14 @@ for tribunal in nome_tribunal:
                     with open(caminho_extraido, "wb") as f_out:
                         f_out.write(z.read(nome_arquivo))
             os.remove(caminho_zip)
-        except:
+        except Exception:
             caminho_csv = os.path.join(pasta_temp, f"{tribunal}_dados.csv")
-            with open(caminho_csv, "wb") as f:
-                f.write(resposta.content)
-            if os.path.exists(caminho_zip):
-                os.remove(caminho_zip)
+            os.rename(caminho_zip, caminho_csv)
 
         caminho_todos_csv = os.path.join(pasta_temp, "*.csv")
         arquivo_parquet_local = f"{tribunal}.parquet"
 
-        # Converte CSV para Parquet comprimido com ZSTD
+        # Converte CSVs para Parquet ZSTD selecionando as 29 colunas
         con.execute(f"""
             COPY (
                 SELECT {colunas_selecionadas} 
@@ -79,23 +86,23 @@ for tribunal in nome_tribunal:
             ) TO '{arquivo_parquet_local}' (FORMAT PARQUET, COMPRESSION ZSTD);
         """)
 
-        # Envia o arquivo Parquet direto para o Hugging Face
+        # Sobrescreve a versão anterior no Hugging Face
         api.upload_file(
             path_or_fileobj=arquivo_parquet_local,
-            path_in_repo=f"data/{tribunal}.parquet",
+            path_in_repo=caminho_hf,
             repo_id=REPO_ID,
-            repo_type="dataset"
+            repo_type="dataset",
+            commit_message=f"Atualização diária: {tribunal}"
         )
-
-        print(f"✅ {tribunal}.parquet enviado com sucesso!", flush=True)
+        print(f"✅ {tribunal}.parquet atualizado no Hugging Face!", flush=True)
 
         if os.path.exists(arquivo_parquet_local):
             os.remove(arquivo_parquet_local)
 
     except Exception as erro:
-        print(f"❌ Erro no {tribunal}: {erro}", flush=True)
+        print(f"❌ Falha no tribunal {tribunal}: {erro}", flush=True)
 
     if os.path.exists(pasta_temp):
         shutil.rmtree(pasta_temp)
 
-print("🏆 Carga completa de todos os tribunais finalizada no Hugging Face!", flush=True)
+print("\n🏆 Sincronização diária finalizada!", flush=True)
