@@ -1,13 +1,14 @@
 name: Executar Robô CNJ
 
 on:
-  workflow_dispatch: # Permite rodar manualmente pelo botão "Run workflow"
+  workflow_dispatch:
   # schedule:
-  #   - cron: '0 6 * * *' # roda todo dia às 03h da manhã - horário de Brasília
+  #   - cron: '0 6 * * *' # Roda o robô todo dia às 3h da manhâ (horário de bsb)
 
 jobs:
   executar:
     runs-on: ubuntu-latest
+    timeout-minutes: 360 # Permite rodar até 6 horas sem ser cancelado
 
     steps:
       - name: Baixar código do repositório
@@ -24,6 +25,7 @@ jobs:
 
       - name: Rodar o script Python
         env:
-          MOTHERDUCK_TOKEN: ${{ secrets.TOKEN_MOTHERDUCK }}
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+          PYTHONUNBUFFERED: "1" # Força os prints a aparecerem na hora no terminal
         run: |
-          python robo_python_2_arq.py
+          python -u robo_python_2_arq.py
