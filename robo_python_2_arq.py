@@ -19,26 +19,24 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-# 1. Pega o token configurado no GitHub
-token = os.environ.get("TOKEN_MOTHERDUCK")
+print("Conectando ao MotherDuck na nuvem...", flush=True)
 
-print("Conectando ao MotherDuck na nuvem...")
-# Conecta na sua conta MotherDuck
-con = duckdb.connect(f"md:?token_motherduck={token}")
+# Conecta na sua conta MotherDuck (usa automaticamente a variável motherduck_token)
+con = duckdb.connect("md:")
 
 # Garante que o banco de dados 'banco_cnj' exista e entra nele
 con.execute("CREATE DATABASE IF NOT EXISTS banco_cnj;")
 con.execute("USE banco_cnj;")
 
-# 2. Apaga a tabela antiga para atualizar tudo do zero
-print("Limpando tabela antiga...")
+# 1. Apaga a tabela antiga para atualizar tudo do zero
+print("Limpando tabela antiga...", flush=True)
 con.execute("DROP TABLE IF EXISTS dados_cnj_consolidado;")
 
 primeiro_tribunal = True
 
-print("Iniciando o download e envio dos 92 tribunais...")
+print("Iniciando o download e envio dos 92 tribunais...", flush=True)
 
-# 3. Loop para baixar e salvar tribunal por tribunal
+# 2. Loop para baixar e salvar tribunal por tribunal
 for tribunal in nome_tribunal:
     print("Processando tribunal:", tribunal, flush=True)
     
@@ -75,7 +73,7 @@ for tribunal in nome_tribunal:
 
         caminho_todos = os.path.join(pasta_temp, "*.csv")
 
-        # 4. Grava direto no MotherDuck
+        # 3. Grava direto no MotherDuck
         if primeiro_tribunal:
             con.execute(f"""
                 CREATE TABLE dados_cnj_consolidado AS 
@@ -93,10 +91,10 @@ for tribunal in nome_tribunal:
         print(f"Sucesso ao salvar {tribunal} no MotherDuck!", flush=True)
 
     except Exception as erro:
-        print(f"Erro no tribunal {tribunal}: {erro}")
+        print(f"Erro no tribunal {tribunal}: {erro}", flush=True)
 
-    # 5. Apaga a pasta temporária para liberar memória do computador
+    # 4. Apaga a pasta temporária para liberar memória do computador
     if os.path.exists(pasta_temp):
         shutil.rmtree(pasta_temp)
 
-print("🏆 FINALIZADO! Todos os tribunais foram salvos com sucesso no MotherDuck.")
+print("🏆 FINALIZADO! Todos os tribunais foram salvos com sucesso no MotherDuck.", flush=True)
