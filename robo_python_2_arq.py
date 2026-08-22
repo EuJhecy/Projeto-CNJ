@@ -19,43 +19,68 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-print("Conectando ao MotherDuck na nuvem...", flush=True)
+# Lista da 29 colunas necessárias
+colunas_selecionadas = """
+    "Tribunal",
+    "Grau",
+    "Nome Orgao",
+    "UF",
+    "Municipio",
+    "Ano",
+    "Mes",
+    "Processo",
+    "Codigo da Ultima classe",
+    "Nome da Ultima classe",
+    "Codigos classes",
+    "Codigos assuntos",
+    "Data de referencia",
+    "Formato",
+    "id_procedimento",
+    "Procedimento",
+    "Recurso",
+    "Codigo Orgao",
+    "id_municipio",
+    "Polo ativo",
+    "Polo ativo - CNPJ",
+    "Polo ativo - Natureza juridica",
+    "Polo ativo - CNAE",
+    "Polo passivo",
+    "Polo passivo - CNPJ",
+    "Polo passivo - Natureza juridica",
+    "Polo passivo - CNAE",
+    "Poder publico",
+    "Materias"
+"""
 
-# Conecta na sua conta MotherDuck (usa automaticamente a variável motherduck_token)
+print("Conectando ao MotherDuck na nuvem...", flush=True)
 con = duckdb.connect("md:")
 
 # Garante que o banco de dados 'banco_cnj' exista e entra nele
 con.execute("CREATE DATABASE IF NOT EXISTS banco_cnj;")
 con.execute("USE banco_cnj;")
 
-# 1. Apaga a tabela antiga para atualizar tudo do zero
-print("Limpando tabela antiga...", flush=True)
+# Apaga a tabela anterior para recriar apenas com as colunas certas
+print("Limpando tabela antiga para liberar espaço...", flush=True)
 con.execute("DROP TABLE IF EXISTS dados_cnj_consolidado;")
 
 primeiro_tribunal = True
 
-print("Iniciando o download e envio dos 92 tribunais...", flush=True)
+print("Iniciando o download e envio dos 92 tribunais (29 colunas)...", flush=True)
 
-# 2. Loop para baixar e salvar tribunal por tribunal
 for tribunal in nome_tribunal:
-    print("Processando tribunal:", tribunal, flush=True)
+    print(f"Processando tribunal: {tribunal}", flush=True)
     
-    # Cria pasta temporária
     pasta_temp = "arquivos_temp"
-    if not os.path.exists(pasta_temp):
-        os.makedirs(pasta_temp)
+    os.makedirs(pasta_temp, exist_ok=True)
 
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
     
     try:
-        # Faz o download do arquivo
         resposta = requests.get(url, timeout=120)
-        
         caminho_zip = f"{tribunal}.zip"
         with open(caminho_zip, "wb") as f:
             f.write(resposta.content)
             
-        # Extrai os CSVs
         try:
             with zipfile.ZipFile(caminho_zip, 'r') as z:
                 for nome_arquivo in z.namelist():
@@ -64,7 +89,6 @@ for tribunal in nome_tribunal:
                         f_out.write(z.read(nome_arquivo))
             os.remove(caminho_zip)
         except:
-            # Se vier direto como CSV
             caminho_csv = os.path.join(pasta_temp, f"{tribunal}_dados.csv")
             with open(caminho_csv, "wb") as f:
                 f.write(resposta.content)
@@ -73,18 +97,18 @@ for tribunal in nome_tribunal:
 
         caminho_todos = os.path.join(pasta_temp, "*.csv")
 
-        # 3. Grava direto no MotherDuck
+        # Salva apenas as 29 colunas
         if primeiro_tribunal:
             con.execute(f"""
                 CREATE TABLE dados_cnj_consolidado AS 
-                SELECT *, '{tribunal}' AS tribunal_origem 
+                SELECT {colunas_selecionadas} 
                 FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
             """)
             primeiro_tribunal = False
         else:
             con.execute(f"""
                 INSERT INTO dados_cnj_consolidado 
-                SELECT *, '{tribunal}' AS tribunal_origem 
+                SELECT {colunas_selecionadas} 
                 FROM read_csv_auto('{caminho_todos}', union_by_name = true, ignore_errors = true);
             """)
 
@@ -93,8 +117,7 @@ for tribunal in nome_tribunal:
     except Exception as erro:
         print(f"Erro no tribunal {tribunal}: {erro}", flush=True)
 
-    # 4. Apaga a pasta temporária para liberar memória do computador
     if os.path.exists(pasta_temp):
         shutil.rmtree(pasta_temp)
 
-print("🏆 FINALIZADO! Todos os tribunais foram salvos com sucesso no MotherDuck.", flush=True)
+print("🏆 FINALIZADO! Todos os tribunais foram salvos com sucesso.", flush=True)
