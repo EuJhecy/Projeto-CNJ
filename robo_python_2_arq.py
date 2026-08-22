@@ -20,7 +20,7 @@ nome_tribunal = [
 ]
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
-REPO_ID = "SEU_USUARIO/dados-cnj"  # Substitua pelo seu repositório
+REPO_ID = "EuJhecy/dados-cnj"
 
 api = HfApi(token=HF_TOKEN)
 
