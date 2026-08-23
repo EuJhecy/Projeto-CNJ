@@ -21,26 +21,15 @@ nome_tribunal = [
 ]
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
-REPO_ID = "EuJhecy/dados-cnj" 
+REPO_ID = "EuJhecy/dados-cnj"
 
 api = HfApi(token=HF_TOKEN)
-
-colunas_selecionadas = """
-    "Tribunal", "Grau", "Nome Orgao", "UF", "Municipio", "Ano", "Mes",
-    "Processo", "Codigo da Ultima classe", "Nome da Ultima classe",
-    "Codigos classes", "Codigos assuntos", "Data de referencia", "Formato",
-    "id_procedimento", "Procedimento", "Recurso", "Codigo Orgao",
-    "id_municipio", "Polo ativo", "Polo ativo - CNPJ",
-    "Polo ativo - Natureza juridica", "Polo ativo - CNAE", "Polo passivo",
-    "Polo passivo - CNPJ", "Polo passivo - Natureza juridica",
-    "Polo passivo - CNAE", "Poder publico", "Materias"
-"""
 
 con = duckdb.connect()
 con.execute("SET max_memory = '5GB';")
 con.execute("SET preserve_insertion_order = false;")
 
-print("🚀 Iniciando rotina diária de atualização do Data Lake...", flush=True)
+print("🚀 Iniciando rotina diária de extração completa do Data Lake CNJ...", flush=True)
 
 for tribunal in nome_tribunal:
     caminho_hf = f"data/{tribunal}.parquet"
@@ -58,7 +47,7 @@ for tribunal in nome_tribunal:
     arquivo_parquet_local = f"{tribunal}.parquet"
 
     try:
-        # 1. Download em streaming com log periódico
+        # 1. Download em streaming
         print(f"Baixando {tribunal}...", flush=True)
         with requests.get(url, stream=True, timeout=600) as r:
             r.raise_for_status()
@@ -71,34 +60,38 @@ for tribunal in nome_tribunal:
                         if baixados % (1024 * 1024 * 64) == 0:
                             print(f"Baixando: {baixados / (1024*1024):.0f} MB...", flush=True)
 
-        # 2. Processamento 1 a 1: Extrai CSV -> Converte Parquet -> Apaga CSV
+        # 2. Conversão incremental 1 a 1 (apenas tabelas processuais analíticas)
         is_zip = False
         try:
             with zipfile.ZipFile(caminho_zip, 'r') as z:
                 is_zip = True
-                lista_arquivos = [f for f in z.namelist() if f.lower().endswith('.csv')]
+                lista_arquivos = [f for f in z.namelist() if f.lower().endswith('.csv') and 'tbl_correg' not in f.lower()]
                 total = len(lista_arquivos)
-                print(f"📦 Extraindo e convertendo {total} arquivos internamente...", flush=True)
+                print(f"📦 Extraindo e convertendo {total} arquivos de processos com todas as colunas...", flush=True)
 
                 for idx, nome_arquivo in enumerate(lista_arquivos, start=1):
-                    # Extrai apenas ESTE arquivo CSV
+                    # Extrai o tipo da tabela a partir do nome (ex: TJSP_CN.csv -> CN)
+                    nome_base = os.path.splitext(os.path.basename(nome_arquivo))[0]
+                    origem = nome_base.split('_', 1)[-1].upper() if '_' in nome_base else nome_base.upper()
+
                     caminho_csv = z.extract(nome_arquivo, path=pasta_temp_csv)
                     caminho_parquet_parte = os.path.join(pasta_temp_parquet, f"parte_{idx}.parquet")
 
-                    # Converte este CSV isolado para Parquet
+                    # Converte todas as colunas e adiciona a identificação da tabela de origem
                     con.execute(f"""
                         COPY (
-                            SELECT {colunas_selecionadas} 
-                            FROM read_csv_auto('{caminho_csv}', union_by_name = true, ignore_errors = true)
+                            SELECT 
+                                '{origem}' AS tabela_origem,
+                                *
+                            FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true)
                         ) TO '{caminho_parquet_parte}' (FORMAT PARQUET, COMPRESSION ZSTD);
                     """)
 
-                    # APAGA o CSV imediatamente para liberar o disco
+                    # Remove o CSV imediatamente para zerar o consumo de disco
                     if os.path.exists(caminho_csv):
                         os.remove(caminho_csv)
-                    print(f"  -> Concluído [{idx}/{total}]: {nome_arquivo} convertido e CSV apagado.", flush=True)
+                    print(f"  -> Concluído [{idx}/{total}]: {nome_arquivo} (origem: {origem}) processado e CSV apagado.", flush=True)
         except zipfile.BadZipFile:
-            # Caso a API tenha devolvido um CSV direto em vez de ZIP
             is_zip = False
 
         if not is_zip:
@@ -107,22 +100,25 @@ for tribunal in nome_tribunal:
             caminho_parquet_parte = os.path.join(pasta_temp_parquet, "parte_1.parquet")
             con.execute(f"""
                 COPY (
-                    SELECT {colunas_selecionadas} 
-                    FROM read_csv_auto('{caminho_csv}', union_by_name = true, ignore_errors = true)
+                    SELECT 
+                        'DADOS_GERAIS' AS tabela_origem,
+                        *
+                    FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true)
                 ) TO '{caminho_parquet_parte}' (FORMAT PARQUET, COMPRESSION ZSTD);
             """)
             if os.path.exists(caminho_csv):
                 os.remove(caminho_csv)
 
-        # Remove o arquivo ZIP baixado antes de consolidar
+        # Remove o arquivo ZIP para liberar o disco antes da consolidação
         if os.path.exists(caminho_zip):
             os.remove(caminho_zip)
 
-        # 3. Une as partes Parquet leves em um único tribunal.parquet
+        # 3. Consolidação final: unifica todas as partes mantendo todas as colunas
         print(f"🔄 Consolidando partes em {arquivo_parquet_local}...", flush=True)
         con.execute(f"""
             COPY (
-                SELECT * FROM read_parquet('{pasta_temp_parquet}/*.parquet')
+                SELECT * 
+                FROM read_parquet('{pasta_temp_parquet}/*.parquet', union_by_name = true)
             ) TO '{arquivo_parquet_local}' (FORMAT PARQUET, COMPRESSION ZSTD);
         """)
 
@@ -133,7 +129,7 @@ for tribunal in nome_tribunal:
             path_in_repo=caminho_hf,
             repo_id=REPO_ID,
             repo_type="dataset",
-            commit_message=f"Atualização diária: {tribunal}"
+            commit_message=f"Atualização diária completa: {tribunal}"
         )
         print(f"✅ {tribunal}.parquet atualizado no Hugging Face!", flush=True)
 
@@ -143,7 +139,7 @@ for tribunal in nome_tribunal:
     except Exception as erro:
         print(f"❌ Falha no tribunal {tribunal}: {erro}", flush=True)
 
-    # Limpeza de pastas temporárias
+    # Limpeza preventiva de pastas temporárias por tribunal
     if os.path.exists(pasta_temp_csv):
         shutil.rmtree(pasta_temp_csv)
     if os.path.exists(pasta_temp_parquet):
@@ -151,4 +147,4 @@ for tribunal in nome_tribunal:
     if os.path.exists(caminho_zip):
         os.remove(caminho_zip)
 
-print("\n🏆 Sincronização diária finalizada!", flush=True)
+print("\n🏆 Sincronização diária finalizada com sucesso!", flush=True)
