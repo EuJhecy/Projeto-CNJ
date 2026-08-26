@@ -31,7 +31,7 @@ con = duckdb.connect(ARQUIVO_BANCO_DUCK)
 con.execute("SET max_memory = '4GB';")
 con.execute("SET preserve_insertion_order = false;")
 
-print("🚀 Iniciando extração e escrita incremental em TABELA ÚNICA...", flush=True)
+print("🚀 Iniciando extração e escrita em tabela única...", flush=True)
 
 tabela_criada = False
 
