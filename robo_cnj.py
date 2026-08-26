@@ -1,5 +1,4 @@
 import os
-import glob
 import shutil
 import zipfile
 import requests
@@ -22,129 +21,109 @@ nome_tribunal = [
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
 REPO_ID = "EuJhecy/dados-cnj"
+ARQUIVO_BANCO_DUCK = "base_temp.duckdb"
+ARQUIVO_FINAL_PARQUET = "base_cnj_completa.parquet"
 
 api = HfApi(token=HF_TOKEN)
 
-con = duckdb.connect()
-con.execute("SET max_memory = '5GB';")
+# Conecta ao arquivo de banco de dados temporário no disco
+con = duckdb.connect(ARQUIVO_BANCO_DUCK)
+con.execute("SET max_memory = '4GB';")
 con.execute("SET preserve_insertion_order = false;")
 
-print("🚀 Iniciando rotina diária de extração completa do Data Lake CNJ...", flush=True)
+print("🚀 Iniciando extração e escrita incremental em TABELA ÚNICA...", flush=True)
+
+tabela_criada = False
 
 for tribunal in nome_tribunal:
-    caminho_hf = f"data/{tribunal}.parquet"
-    print(f"\n==========================================", flush=True)
-    print(f"--- Sincronizando: {tribunal} ---", flush=True)
-    print(f"==========================================", flush=True)
-    
-    pasta_temp_csv = "temp_csv"
-    pasta_temp_parquet = "temp_parquet_partes"
+    print(f"\n--- Sincronizando: {tribunal} ---", flush=True)
+    pasta_temp_csv = f"temp_{tribunal}"
     os.makedirs(pasta_temp_csv, exist_ok=True)
-    os.makedirs(pasta_temp_parquet, exist_ok=True)
     
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
     caminho_zip = f"{tribunal}.zip"
-    arquivo_parquet_local = f"{tribunal}.parquet"
 
     try:
-        # 1. Download em streaming
         print(f"Baixando {tribunal}...", flush=True)
         with requests.get(url, stream=True, timeout=600) as r:
             r.raise_for_status()
-            baixados = 0
             with open(caminho_zip, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024 * 16):
                     if chunk:
                         f.write(chunk)
-                        baixados += len(chunk)
-                        if baixados % (1024 * 1024 * 64) == 0:
-                            print(f"Baixando: {baixados / (1024*1024):.0f} MB...", flush=True)
 
-        # 2. Conversão incremental 1 a 1 (apenas tabelas processuais analíticas)
         is_zip = False
         try:
             with zipfile.ZipFile(caminho_zip, 'r') as z:
                 is_zip = True
                 lista_arquivos = [f for f in z.namelist() if f.lower().endswith('.csv') and 'tbl_correg' not in f.lower()]
-                total = len(lista_arquivos)
-                print(f"📦 Extraindo e convertendo {total} arquivos de processos com todas as colunas...", flush=True)
-
-                for idx, nome_arquivo in enumerate(lista_arquivos, start=1):
-                    # Extrai o tipo da tabela a partir do nome (ex: TJSP_CN.csv -> CN)
+                
+                for nome_arquivo in lista_arquivos:
                     nome_base = os.path.splitext(os.path.basename(nome_arquivo))[0]
                     origem = nome_base.split('_', 1)[-1].upper() if '_' in nome_base else nome_base.upper()
-
                     caminho_csv = z.extract(nome_arquivo, path=pasta_temp_csv)
-                    caminho_parquet_parte = os.path.join(pasta_temp_parquet, f"parte_{idx}.parquet")
 
-                    # Converte todas as colunas e adiciona a identificação da tabela de origem
+                    # Escreve incrementalmente na tabela 'dados_unificados'
+                    query_acao = "CREATE TABLE dados_unificados AS" if not tabela_criada else "INSERT INTO dados_unificados BY NAME"
                     con.execute(f"""
-                        COPY (
-                            SELECT 
-                                '{origem}' AS tabela_origem,
-                                *
-                            FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true)
-                        ) TO '{caminho_parquet_parte}' (FORMAT PARQUET, COMPRESSION ZSTD);
+                        {query_acao}
+                        SELECT 
+                            '{tribunal}' AS tribunal,
+                            '{origem}' AS tabela_origem,
+                            *
+                        FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true);
                     """)
-
-                    # Remove o CSV imediatamente para zerar o consumo de disco
-                    if os.path.exists(caminho_csv):
-                        os.remove(caminho_csv)
-                    print(f"  -> Concluído [{idx}/{total}]: {nome_arquivo} (origem: {origem}) processado e CSV apagado.", flush=True)
+                    tabela_criada = True
+                    os.remove(caminho_csv)
         except zipfile.BadZipFile:
             is_zip = False
 
         if not is_zip:
             caminho_csv = os.path.join(pasta_temp_csv, f"{tribunal}_dados.csv")
             os.rename(caminho_zip, caminho_csv)
-            caminho_parquet_parte = os.path.join(pasta_temp_parquet, "parte_1.parquet")
+            query_acao = "CREATE TABLE dados_unificados AS" if not tabela_criada else "INSERT INTO dados_unificados BY NAME"
             con.execute(f"""
-                COPY (
-                    SELECT 
-                        'DADOS_GERAIS' AS tabela_origem,
-                        *
-                    FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true)
-                ) TO '{caminho_parquet_parte}' (FORMAT PARQUET, COMPRESSION ZSTD);
+                {query_acao}
+                SELECT 
+                    '{tribunal}' AS tribunal,
+                    'DADOS_GERAIS' AS tabela_origem,
+                    *
+                FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true);
             """)
-            if os.path.exists(caminho_csv):
-                os.remove(caminho_csv)
-
-        # Remove o arquivo ZIP para liberar o disco antes da consolidação
-        if os.path.exists(caminho_zip):
-            os.remove(caminho_zip)
-
-        # 3. Consolidação final: unifica todas as partes mantendo todas as colunas
-        print(f"🔄 Consolidando partes em {arquivo_parquet_local}...", flush=True)
-        con.execute(f"""
-            COPY (
-                SELECT * 
-                FROM read_parquet('{pasta_temp_parquet}/*.parquet', union_by_name = true)
-            ) TO '{arquivo_parquet_local}' (FORMAT PARQUET, COMPRESSION ZSTD);
-        """)
-
-        # 4. Upload para o Hugging Face
-        print(f"Subindo {arquivo_parquet_local} para o Hugging Face...", flush=True)
-        api.upload_file(
-            path_or_fileobj=arquivo_parquet_local,
-            path_in_repo=caminho_hf,
-            repo_id=REPO_ID,
-            repo_type="dataset",
-            commit_message=f"Atualização diária completa: {tribunal}"
-        )
-        print(f"✅ {tribunal}.parquet atualizado no Hugging Face!", flush=True)
-
-        if os.path.exists(arquivo_parquet_local):
-            os.remove(arquivo_parquet_local)
+            tabela_criada = True
+            os.remove(caminho_csv)
 
     except Exception as erro:
-        print(f"❌ Falha no tribunal {tribunal}: {erro}", flush=True)
+        print(f"❌ Erro no tribunal {tribunal}: {erro}", flush=True)
 
-    # Limpeza preventiva de pastas temporárias por tribunal
-    if os.path.exists(pasta_temp_csv):
-        shutil.rmtree(pasta_temp_csv)
-    if os.path.exists(pasta_temp_parquet):
-        shutil.rmtree(pasta_temp_parquet)
+    # Deleta arquivos brutos imediatamente após salvar no banco interno
     if os.path.exists(caminho_zip):
         os.remove(caminho_zip)
+    if os.path.exists(pasta_temp_csv):
+        shutil.rmtree(pasta_temp_csv)
 
-print("\n🏆 Sincronização diária finalizada com sucesso!", flush=True)
+# Exporta a tabela consolidada
+print("\n📦 Exportando banco consolidado para arquivo Parquet único...", flush=True)
+con.execute(f"""
+    COPY dados_unificados TO '{ARQUIVO_FINAL_PARQUET}' (FORMAT PARQUET, COMPRESSION ZSTD);
+""")
+con.close()
+
+# Deleta a base DuckDB intermediária para economizar espaço antes do upload
+if os.path.exists(ARQUIVO_BANCO_DUCK):
+    os.remove(ARQUIVO_BANCO_DUCK)
+
+# Upload único do arquivo unificado
+print(f"🚀 Enviando a tabela única ({ARQUIVO_FINAL_PARQUET}) para o Hugging Face...", flush=True)
+api.upload_file(
+    path_or_fileobj=ARQUIVO_FINAL_PARQUET,
+    path_in_repo=f"data/{ARQUIVO_FINAL_PARQUET}",
+    repo_id=REPO_ID,
+    repo_type="dataset",
+    commit_message="Base completa unificada de todos os 92 tribunais"
+)
+
+if os.path.exists(ARQUIVO_FINAL_PARQUET):
+    os.remove(ARQUIVO_FINAL_PARQUET)
+
+print("\n🏆 Dados extraídos com Sucesso!", flush=True)
