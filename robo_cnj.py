@@ -6,10 +6,10 @@ import duckdb
 from huggingface_hub import HfApi
 
 nome_tribunal = [
-    'TJSP','CJF','STJ','STM','TJAC','TJAL','TJAM','TJAP','TJBA','TJCE','TJDFT',
+    'CJF','STJ','STM','TJAC','TJAL','TJAM','TJAP','TJBA','TJCE','TJDFT',
     'TJES','TJGO','TJMA','TJMG','TJMMG','TJMRS','TJMS','TJMSP','TJMT',
     'TJPA','TJPB','TJPE','TJPI','TJPR','TJRJ','TJRN','TJRO','TJRR','TJRS',
-    'TJSC','TJSE','TJTO','TRE-AC','TRE-AL','TRE-AM','TRE-AP',
+    'TJSC','TJSE','TJSP','TJTO','TRE-AC','TRE-AL','TRE-AM','TRE-AP',
     'TRE-BA','TRE-CE','TRE-DF','TRE-ES','TRE-GO','TRE-MA','TRE-MG',
     'TRE-MS','TRE-MT','TRE-PA','TRE-PB','TRE-PE','TRE-PI','TRE-PR',
     'TRE-RJ','TRE-RN','TRE-RO','TRE-RR','TRE-RS','TRE-SC','TRE-SE',
@@ -26,12 +26,15 @@ ARQUIVO_FINAL_PARQUET = "base_cnj_completa.parquet"
 
 api = HfApi(token=HF_TOKEN)
 
-# Conecta ao arquivo de banco de dados temporário no disco
+# GARANTE QUE A BASE ANTERIOR SEJA APAGADA ANTES DE COMECAR
+if os.path.exists(ARQUIVO_BANCO_DUCK):
+    os.remove(ARQUIVO_BANCO_DUCK)
+
 con = duckdb.connect(ARQUIVO_BANCO_DUCK)
 con.execute("SET max_memory = '4GB';")
 con.execute("SET preserve_insertion_order = false;")
 
-print("🚀 Iniciando extração e escrita em tabela única...", flush=True)
+print("🚀 Iniciando extração e consolidação em tabela única", flush=True)
 
 tabela_criada = False
 
@@ -45,7 +48,7 @@ for tribunal in nome_tribunal:
 
     try:
         print(f"Baixando {tribunal}...", flush=True)
-        with requests.get(url, stream=True, timeout=600) as r:
+        with requests.get(url, stream=True, timeout=(30, 900)) as r:
             r.raise_for_status()
             with open(caminho_zip, "wb") as f:
                 for chunk in r.iter_content(chunk_size=1024 * 1024 * 16):
@@ -63,17 +66,22 @@ for tribunal in nome_tribunal:
                     origem = nome_base.split('_', 1)[-1].upper() if '_' in nome_base else nome_base.upper()
                     caminho_csv = z.extract(nome_arquivo, path=pasta_temp_csv)
 
-                    # Escreve incrementalmente na tabela 'dados_unificados'
+                    # Leitura temporaria para verificar e tratar a coluna 'tribunal'
+                    con.execute(f"CREATE OR REPLACE TEMP TABLE temp_stage AS SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true, normalize_names=true);")
+                    
+                    # Checa colunas existentes na tabela temporaria
+                    colunas = [col[0].lower() for col in con.execute("DESCRIBE temp_stage").fetchall()]
+                    
+                    if 'tribunal' in colunas:
+                        sql_select = f"SELECT '{origem}' AS tabela_origem, * EXCLUDE (tribunal), '{tribunal}' AS tribunal FROM temp_stage"
+                    else:
+                        sql_select = f"SELECT '{tribunal}' AS tribunal, '{origem}' AS tabela_origem, * FROM temp_stage"
+
                     query_acao = "CREATE TABLE dados_unificados AS" if not tabela_criada else "INSERT INTO dados_unificados BY NAME"
-                    con.execute(f"""
-                        {query_acao}
-                        SELECT 
-                            '{tribunal}' AS tribunal,
-                            '{origem}' AS tabela_origem,
-                            *
-                        FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true);
-                    """)
+                    con.execute(f"{query_acao} {sql_select};")
+                    
                     tabela_criada = True
+                    con.execute("DROP TABLE temp_stage;")
                     os.remove(caminho_csv)
         except zipfile.BadZipFile:
             is_zip = False
@@ -81,39 +89,41 @@ for tribunal in nome_tribunal:
         if not is_zip:
             caminho_csv = os.path.join(pasta_temp_csv, f"{tribunal}_dados.csv")
             os.rename(caminho_zip, caminho_csv)
+            
+            con.execute(f"CREATE OR REPLACE TEMP TABLE temp_stage AS SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true, normalize_names=true);")
+            colunas = [col[0].lower() for col in con.execute("DESCRIBE temp_stage").fetchall()]
+            
+            if 'tribunal' in colunas:
+                sql_select = f"SELECT 'DADOS_GERAIS' AS tabela_origem, * EXCLUDE (tribunal), '{tribunal}' AS tribunal FROM temp_stage"
+            else:
+                sql_select = f"SELECT '{tribunal}' AS tribunal, 'DADOS_GERAIS' AS tabela_origem, * FROM temp_stage"
+
             query_acao = "CREATE TABLE dados_unificados AS" if not tabela_criada else "INSERT INTO dados_unificados BY NAME"
-            con.execute(f"""
-                {query_acao}
-                SELECT 
-                    '{tribunal}' AS tribunal,
-                    'DADOS_GERAIS' AS tabela_origem,
-                    *
-                FROM read_csv_auto('{caminho_csv}', ignore_errors = true, all_varchar = true);
-            """)
+            con.execute(f"{query_acao} {sql_select};")
+            
             tabela_criada = True
+            con.execute("DROP TABLE temp_stage;")
             os.remove(caminho_csv)
 
     except Exception as erro:
         print(f"❌ Erro no tribunal {tribunal}: {erro}", flush=True)
 
-    # Deleta arquivos brutos imediatamente após salvar no banco interno
     if os.path.exists(caminho_zip):
         os.remove(caminho_zip)
     if os.path.exists(pasta_temp_csv):
         shutil.rmtree(pasta_temp_csv)
 
-# Exporta a tabela consolidada
+# Exporta a tabela consolidada direto para 1 Parquet final
 print("\n📦 Exportando banco consolidado para arquivo Parquet único...", flush=True)
 con.execute(f"""
     COPY dados_unificados TO '{ARQUIVO_FINAL_PARQUET}' (FORMAT PARQUET, COMPRESSION ZSTD);
 """)
 con.close()
 
-# Deleta a base DuckDB intermediária para economizar espaço antes do upload
 if os.path.exists(ARQUIVO_BANCO_DUCK):
     os.remove(ARQUIVO_BANCO_DUCK)
 
-# Upload único do arquivo unificado
+# Upload unico do arquivo unificado
 print(f"🚀 Enviando a tabela única ({ARQUIVO_FINAL_PARQUET}) para o Hugging Face...", flush=True)
 api.upload_file(
     path_or_fileobj=ARQUIVO_FINAL_PARQUET,
@@ -126,4 +136,4 @@ api.upload_file(
 if os.path.exists(ARQUIVO_FINAL_PARQUET):
     os.remove(ARQUIVO_FINAL_PARQUET)
 
-print("\n🏆 Dados extraídos com Sucesso!", flush=True)
+print("\n🏆 Processo concluído com sucesso!", flush=True)
