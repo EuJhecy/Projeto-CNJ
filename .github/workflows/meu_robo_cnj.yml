@@ -28,4 +28,4 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           PYTHONUNBUFFERED: "1"
         run: |
-          python -u robo_python_2_arq.py
+          python -u robo_cnj.py
