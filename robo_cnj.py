@@ -78,7 +78,7 @@ for tribunal in nome_tribunal:
         # Pega a lista de todos os CSVs extraídos (ignorando tabelas da corregedoria)
         arquivos_csv = [f for f in os.listdir(pasta_temp) if f.endswith('.csv') and 'tbl_correg' not in f.lower()]
 
-        # PASSO C: Ler cada CSV e salvar no banco DuckDB
+       # PASSO C: Ler cada CSV e salvar no banco DuckDB
         for arquivo in arquivos_csv:
             caminho_csv = os.path.join(pasta_temp, arquivo)
 
@@ -95,29 +95,32 @@ for tribunal in nome_tribunal:
                 SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true);
             """)
 
+            # Pega a lista de colunas exatamente como vieram do CSV (respeitando maiúsculas)
+            colunas_originais = [coluna[0] for coluna in con.execute("DESCRIBE rascunho").fetchall()]
+
+            # Procura qual é o nome exato da coluna tribunal (Tribunal, TRIBUNAL, tribunal...)
+            nome_exato_tribunal = None
+            for coluna in colunas_originais:
+                if coluna.lower() == 'tribunal':
+                    nome_exato_tribunal = coluna
+                    break
+
+            # Se encontrou a coluna no arquivo original, a gente exclui ela pelo NOME EXATO usando aspas duplas.
+            # Em seguida, criamos a nossa coluna padronizada chamada 'Tribunal'
+            if nome_exato_tribunal:
+                sql_select = f"SELECT '{tabela_origem}' AS tabela_origem, '{tribunal}' AS Tribunal, * EXCLUDE (\"{nome_exato_tribunal}\") FROM rascunho"
+            else:
+                sql_select = f"SELECT '{tabela_origem}' AS tabela_origem, '{tribunal}' AS Tribunal, * FROM rascunho"
+
             # Se a tabela principal 'dados_unificados' ainda NÃO existe, cria ela
             if not tabela_foi_criada:
-                con.execute(f"""
-                    CREATE TABLE dados_unificados AS 
-                    SELECT 
-                        '{tabela_origem}' AS tabela_origem,
-                        '{tribunal}' AS Tribunal,
-                        * EXCLUDE (Tribunal, tribunal) 
-                    FROM rascunho;
-                """)
+                con.execute(f"CREATE TABLE dados_unificados AS {sql_select};")
                 tabela_foi_criada = True
-            # Se já existe, apenas cola as novas linhas no final da tabela
+            # Se já existe, apenas cola as novas linhas
             else:
-                con.execute(f"""
-                    INSERT INTO dados_unificados BY NAME 
-                    SELECT 
-                        '{tabela_origem}' AS tabela_origem,
-                        '{tribunal}' AS Tribunal,
-                        * EXCLUDE (Tribunal, tribunal) 
-                    FROM rascunho;
-                """)
+                con.execute(f"INSERT INTO dados_unificados BY NAME {sql_select};")
 
-            # Apaga o rascunho e remove o arquivo CSV lido para liberar espaço no HD
+            # Apaga o rascunho e remove o arquivo CSV lido
             con.execute("DROP TABLE rascunho;")
             os.remove(caminho_csv)
 
