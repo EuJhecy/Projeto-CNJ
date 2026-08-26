@@ -1,6 +1,8 @@
 # Projeto-CNJ
 
-Este projeto executa uma rotina diária automatizada para extrair, padronizar e unificar as bases públicas dos 92 tribunais do Conselho Nacional de Justiça (CNJ) em um repositório otimizado para análise de dados.
+Este projeto executa uma rotina diária automatizada para extrair e unificar as bases públicas dos 92 tribunais do Conselho Nacional de Justiça (CNJ) em um repositório.
+
+O script roda todos os dias às 3h da manhã do horário de Brasília.
 
 ---
 
