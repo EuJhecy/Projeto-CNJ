@@ -5,6 +5,7 @@ import requests
 import duckdb
 from huggingface_hub import HfApi
 
+# 1. LISTA COM OS 92 TRIBUNAIS DO BRASIL
 nome_tribunal = [
     'CJF','STJ','STM','TJAC','TJAL','TJAM','TJAP','TJBA','TJCE','TJDFT',
     'TJES','TJGO','TJMA','TJMG','TJMMG','TJMRS','TJMS','TJMSP','TJMT',
@@ -19,121 +20,141 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
+# 2. CONFIGURAÇÕES DE SENHA E ARQUIVOS
 HF_TOKEN = os.environ.get("HF_TOKEN")
 REPO_ID = "EuJhecy/dados-cnj"
-ARQUIVO_BANCO_DUCK = "base_temp.duckdb"
-ARQUIVO_FINAL_PARQUET = "base_cnj_completa.parquet"
 
+ARQUIVO_BANCO = "base_temp.duckdb"
+ARQUIVO_PARQUET_FINAL = "base_cnj_completa.parquet"
+
+# Conecta no Hugging Face usando o Token
 api = HfApi(token=HF_TOKEN)
 
-# GARANTE QUE A BASE ANTERIOR SEJA APAGADA ANTES DE COMECAR
-if os.path.exists(ARQUIVO_BANCO_DUCK):
-    os.remove(ARQUIVO_BANCO_DUCK)
+# Se sobrou algum banco da execução passada, apaga para começar do zero
+if os.path.exists(ARQUIVO_BANCO):
+    os.remove(ARQUIVO_BANCO)
 
-con = duckdb.connect(ARQUIVO_BANCO_DUCK)
+# Abre a conexão com o banco de dados DuckDB
+con = duckdb.connect(ARQUIVO_BANCO)
+
+# Limita o uso da memória RAM para 4 GB para não estourar o servidor
 con.execute("SET max_memory = '4GB';")
-con.execute("SET preserve_insertion_order = false;")
 
-print("🚀 Iniciando extração e consolidação em tabela única", flush=True)
+print("🚀 Iniciando o robô de extração do CNJ...", flush=True)
 
-tabela_criada = False
+# Variável para controlar se a tabela principal já foi criada
+tabela_foi_criada = False
 
+# 3. LOOP PRINCIPAL: PASSA TRIBUNAL POR TRIBUNAL
 for tribunal in nome_tribunal:
-    print(f"\n--- Sincronizando: {tribunal} ---", flush=True)
-    pasta_temp_csv = f"temp_{tribunal}"
-    os.makedirs(pasta_temp_csv, exist_ok=True)
-    
+    print(f"\n----------------------------------------", flush=True)
+    print(f"Processando tribunal: {tribunal}", flush=True)
+    print(f"----------------------------------------", flush=True)
+
+    # Nomes das pastas e arquivos temporários deste tribunal
+    pasta_temp = f"pasta_{tribunal}"
+    arquivo_zip = f"{tribunal}.zip"
+    os.makedirs(pasta_temp, exist_ok=True)
+
+    # URL oficial de download do CNJ
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
-    caminho_zip = f"{tribunal}.zip"
 
     try:
-        print(f"Baixando {tribunal}...", flush=True)
-        with requests.get(url, stream=True, timeout=(30, 900)) as r:
-            r.raise_for_status()
-            with open(caminho_zip, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 1024 * 16):
-                    if chunk:
-                        f.write(chunk)
+        # PASSO A: Baixar o arquivo ZIP do tribunal
+        print(f"1. Baixando arquivo {arquivo_zip}...", flush=True)
+        resposta = requests.get(url, stream=True, timeout=(30, 900))
+        resposta.raise_for_status()
 
-        is_zip = False
-        try:
-            with zipfile.ZipFile(caminho_zip, 'r') as z:
-                is_zip = True
-                lista_arquivos = [f for f in z.namelist() if f.lower().endswith('.csv') and 'tbl_correg' not in f.lower()]
-                
-                for nome_arquivo in lista_arquivos:
-                    nome_base = os.path.splitext(os.path.basename(nome_arquivo))[0]
-                    origem = nome_base.split('_', 1)[-1].upper() if '_' in nome_base else nome_base.upper()
-                    caminho_csv = z.extract(nome_arquivo, path=pasta_temp_csv)
+        with open(arquivo_zip, "wb") as f:
+            for pedaco in resposta.iter_content(chunk_size=1024 * 1024 * 16):
+                if pedaco:
+                    f.write(pedaco)
 
-                    # Leitura temporaria para verificar e tratar a coluna 'tribunal'
-                    con.execute(f"CREATE OR REPLACE TEMP TABLE temp_stage AS SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true, normalize_names=true);")
-                    
-                    # Checa colunas existentes na tabela temporaria
-                    colunas = [col[0].lower() for col in con.execute("DESCRIBE temp_stage").fetchall()]
-                    
-                    if 'tribunal' in colunas:
-                        sql_select = f"SELECT '{origem}' AS tabela_origem, * EXCLUDE (tribunal), '{tribunal}' AS tribunal FROM temp_stage"
-                    else:
-                        sql_select = f"SELECT '{tribunal}' AS tribunal, '{origem}' AS tabela_origem, * FROM temp_stage"
+        # PASSO B: Extrair os arquivos CSV do ZIP
+        print("2. Extraindo arquivos CSV...", flush=True)
+        with zipfile.ZipFile(arquivo_zip, 'r') as zip_ref:
+            zip_ref.extractall(pasta_temp)
 
-                    query_acao = "CREATE TABLE dados_unificados AS" if not tabela_criada else "INSERT INTO dados_unificados BY NAME"
-                    con.execute(f"{query_acao} {sql_select};")
-                    
-                    tabela_criada = True
-                    con.execute("DROP TABLE temp_stage;")
-                    os.remove(caminho_csv)
-        except zipfile.BadZipFile:
-            is_zip = False
+        # Pega a lista de todos os CSVs extraídos (ignorando tabelas da corregedoria)
+        arquivos_csv = [f for f in os.listdir(pasta_temp) if f.endswith('.csv') and 'tbl_correg' not in f.lower()]
 
-        if not is_zip:
-            caminho_csv = os.path.join(pasta_temp_csv, f"{tribunal}_dados.csv")
-            os.rename(caminho_zip, caminho_csv)
-            
-            con.execute(f"CREATE OR REPLACE TEMP TABLE temp_stage AS SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true, normalize_names=true);")
-            colunas = [col[0].lower() for col in con.execute("DESCRIBE temp_stage").fetchall()]
-            
-            if 'tribunal' in colunas:
-                sql_select = f"SELECT 'DADOS_GERAIS' AS tabela_origem, * EXCLUDE (tribunal), '{tribunal}' AS tribunal FROM temp_stage"
+        # PASSO C: Ler cada CSV e salvar no banco DuckDB
+        for arquivo in arquivos_csv:
+            caminho_csv = os.path.join(pasta_temp, arquivo)
+
+            # Descobre o nome da tabela de origem (ex: CN, CPL, CTC)
+            nome_sem_ext = os.path.splitext(arquivo)[0]
+            if '_' in nome_sem_ext:
+                tabela_origem = nome_sem_ext.split('_', 1)[-1].upper()
             else:
-                sql_select = f"SELECT '{tribunal}' AS tribunal, 'DADOS_GERAIS' AS tabela_origem, * FROM temp_stage"
+                tabela_origem = nome_sem_ext.upper()
 
-            query_acao = "CREATE TABLE dados_unificados AS" if not tabela_criada else "INSERT INTO dados_unificados BY NAME"
-            con.execute(f"{query_acao} {sql_select};")
-            
-            tabela_criada = True
-            con.execute("DROP TABLE temp_stage;")
+            # Lê o CSV para uma tabela temporária de rascunho
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE rascunho AS 
+                SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true);
+            """)
+
+            # Se a tabela principal 'dados_unificados' ainda NÃO existe, cria ela
+            if not tabela_foi_criada:
+                con.execute(f"""
+                    CREATE TABLE dados_unificados AS 
+                    SELECT 
+                        '{tabela_origem}' AS tabela_origem,
+                        '{tribunal}' AS Tribunal,
+                        * EXCLUDE (Tribunal, tribunal) 
+                    FROM rascunho;
+                """)
+                tabela_foi_criada = True
+            # Se já existe, apenas cola as novas linhas no final da tabela
+            else:
+                con.execute(f"""
+                    INSERT INTO dados_unificados BY NAME 
+                    SELECT 
+                        '{tabela_origem}' AS tabela_origem,
+                        '{tribunal}' AS Tribunal,
+                        * EXCLUDE (Tribunal, tribunal) 
+                    FROM rascunho;
+                """)
+
+            # Apaga o rascunho e remove o arquivo CSV lido para liberar espaço no HD
+            con.execute("DROP TABLE rascunho;")
             os.remove(caminho_csv)
 
+        print(f"✅ Tribunal {tribunal} processado com sucesso!", flush=True)
+
     except Exception as erro:
-        print(f"❌ Erro no tribunal {tribunal}: {erro}", flush=True)
+        print(f"❌ Erro ao processar o tribunal {tribunal}: {erro}", flush=True)
 
-    if os.path.exists(caminho_zip):
-        os.remove(caminho_zip)
-    if os.path.exists(pasta_temp_csv):
-        shutil.rmtree(pasta_temp_csv)
+    # PASSO D: Limpeza de segurança após terminar o tribunal
+    if os.path.exists(arquivo_zip):
+        os.remove(arquivo_zip)
+    if os.path.exists(pasta_temp):
+        shutil.rmtree(pasta_temp)
 
-# Exporta a tabela consolidada direto para 1 Parquet final
-print("\n📦 Exportando banco consolidado para arquivo Parquet único...", flush=True)
+# 4. EXPORTAR A TABELA COMPLETA PARA UM ARQUIVO PARQUET ÚNICO
+print("\n📦 Salvando a base unificada em arquivo Parquet...", flush=True)
 con.execute(f"""
-    COPY dados_unificados TO '{ARQUIVO_FINAL_PARQUET}' (FORMAT PARQUET, COMPRESSION ZSTD);
+    COPY dados_unificados TO '{ARQUIVO_PARQUET_FINAL}' (FORMAT PARQUET, COMPRESSION ZSTD);
 """)
+
+# Fecha a conexão com o banco e apaga o arquivo temporário do DuckDB
 con.close()
+if os.path.exists(ARQUIVO_BANCO):
+    os.remove(ARQUIVO_BANCO)
 
-if os.path.exists(ARQUIVO_BANCO_DUCK):
-    os.remove(ARQUIVO_BANCO_DUCK)
-
-# Upload unico do arquivo unificado
-print(f"🚀 Enviando a tabela única ({ARQUIVO_FINAL_PARQUET}) para o Hugging Face...", flush=True)
+# 5. ENVIAR O ARQUIVO PARQUET FINAL PARA O HUGGING FACE
+print(f"🚀 Enviando {ARQUIVO_PARQUET_FINAL} para o Hugging Face...", flush=True)
 api.upload_file(
-    path_or_fileobj=ARQUIVO_FINAL_PARQUET,
-    path_in_repo=f"data/{ARQUIVO_FINAL_PARQUET}",
+    path_or_fileobj=ARQUIVO_PARQUET_FINAL,
+    path_in_repo=f"data/{ARQUIVO_PARQUET_FINAL}",
     repo_id=REPO_ID,
     repo_type="dataset",
-    commit_message="Base completa unificada de todos os 92 tribunais"
+    commit_message="Atualização da base gigante unificada de todos os 92 tribunais"
 )
 
-if os.path.exists(ARQUIVO_FINAL_PARQUET):
-    os.remove(ARQUIVO_FINAL_PARQUET)
+# Limpa o arquivo Parquet local final
+if os.path.exists(ARQUIVO_PARQUET_FINAL):
+    os.remove(ARQUIVO_PARQUET_FINAL)
 
-print("\n🏆 Processo concluído com sucesso!", flush=True)
+print("\n🏆 Processo finalizado com sucesso!", flush=True)
