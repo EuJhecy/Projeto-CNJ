@@ -1,6 +1,7 @@
 import os
 import shutil
 import zipfile
+import glob
 import requests
 import duckdb
 from huggingface_hub import HfApi
@@ -20,48 +21,36 @@ nome_tribunal = [
     'TRT3','TRT4','TRT5','TRT6','TRT7','TRT8','TRT9','TSE','TST'
 ]
 
-# 2. CONFIGURAÇÕES DE SENHA E ARQUIVOS
+# 2. CONFIGURAÇÕES
 HF_TOKEN = os.environ.get("HF_TOKEN")
 REPO_ID = "EuJhecy/dados-cnj"
-
-ARQUIVO_BANCO = "base_temp.duckdb"
 ARQUIVO_PARQUET_FINAL = "base_cnj_completa.parquet"
 
-# Conecta no Hugging Face usando o Token
 api = HfApi(token=HF_TOKEN)
-
-# Se sobrou algum banco da execução passada, apaga para começar do zero
-if os.path.exists(ARQUIVO_BANCO):
-    os.remove(ARQUIVO_BANCO)
-
-# Abre a conexão com o banco de dados DuckDB
-con = duckdb.connect(ARQUIVO_BANCO)
-
-# Limita o uso da memória RAM para 4 GB para não estourar o servidor
+con = duckdb.connect()
 con.execute("SET max_memory = '4GB';")
 
-print("🚀 Iniciando o robô de extração do CNJ...", flush=True)
+print("🚀 Iniciando o robô de extração em blocos (Mini-Parquets)...", flush=True)
 
-# Variável para controlar se a tabela principal já foi criada
-tabela_foi_criada = False
+# Limpeza de segurança de execuções anteriores
+for f in glob.glob("parte_*.parquet"):
+    os.remove(f)
 
-# 3. LOOP PRINCIPAL: PASSA TRIBUNAL POR TRIBUNAL
+# 3. LOOP PRINCIPAL
 for tribunal in nome_tribunal:
     print(f"\n----------------------------------------", flush=True)
     print(f"Processando tribunal: {tribunal}", flush=True)
     print(f"----------------------------------------", flush=True)
 
-    # Nomes das pastas e arquivos temporários deste tribunal
     pasta_temp = f"pasta_{tribunal}"
     arquivo_zip = f"{tribunal}.zip"
     os.makedirs(pasta_temp, exist_ok=True)
 
-    # URL oficial de download do CNJ
     url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
 
     try:
-        # PASSO A: Baixar o arquivo ZIP do tribunal
-        print(f"1. Baixando arquivo {arquivo_zip}...", flush=True)
+        # PASSO A: Baixar ZIP
+        print(f"1. Baixando arquivo ZIP...", flush=True)
         resposta = requests.get(url, stream=True, timeout=(30, 900))
         resposta.raise_for_status()
 
@@ -70,57 +59,44 @@ for tribunal in nome_tribunal:
                 if pedaco:
                     f.write(pedaco)
 
-        # PASSO B: Extrair os arquivos CSV do ZIP
+        # PASSO B: Extrair CSVs
         print("2. Extraindo arquivos CSV...", flush=True)
         with zipfile.ZipFile(arquivo_zip, 'r') as zip_ref:
             zip_ref.extractall(pasta_temp)
 
-        # Pega a lista de todos os CSVs extraídos (ignorando tabelas da corregedoria)
         arquivos_csv = [f for f in os.listdir(pasta_temp) if f.endswith('.csv') and 'tbl_correg' not in f.lower()]
 
-       # PASSO C: Ler cada CSV e salvar no banco DuckDB
+        # PASSO C: Criar os Mini-Parquets
         for arquivo in arquivos_csv:
             caminho_csv = os.path.join(pasta_temp, arquivo)
 
-            # Descobre o nome da tabela de origem (ex: CN, CPL, CTC)
             nome_sem_ext = os.path.splitext(arquivo)[0]
             if '_' in nome_sem_ext:
                 tabela_origem = nome_sem_ext.split('_', 1)[-1].upper()
             else:
                 tabela_origem = nome_sem_ext.upper()
 
-            # Lê o CSV para uma tabela temporária de rascunho
-            con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE rascunho AS 
-                SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true);
-            """)
+            con.execute(f"CREATE OR REPLACE TEMP TABLE rascunho AS SELECT * FROM read_csv_auto('{caminho_csv}', ignore_errors=true, all_varchar=true);")
 
-            # Pega a lista de colunas exatamente como vieram do CSV (respeitando maiúsculas)
-            colunas_originais = [coluna[0] for coluna in con.execute("DESCRIBE rascunho").fetchall()]
+            # Pega TODAS as colunas originais do CSV
+            colunas_originais = [c[0] for c in con.execute("DESCRIBE rascunho").fetchall()]
 
-            # Procura qual é o nome exato da coluna tribunal (Tribunal, TRIBUNAL, tribunal...)
-            nome_exato_tribunal = None
-            for coluna in colunas_originais:
-                if coluna.lower() == 'tribunal':
-                    nome_exato_tribunal = coluna
-                    break
+            # Encontra TODAS as colunas que se chamam 'tribunal' (com maiúscula, minúscula, etc)
+            colunas_tribunal = [c for c in colunas_originais if c.lower() == 'tribunal']
 
-            # Se encontrou a coluna no arquivo original, a gente exclui ela pelo NOME EXATO usando aspas duplas.
-            # Em seguida, criamos a nossa coluna padronizada chamada 'Tribunal'
-            if nome_exato_tribunal:
-                sql_select = f"SELECT '{tabela_origem}' AS tabela_origem, '{tribunal}' AS Tribunal, * EXCLUDE (\"{nome_exato_tribunal}\") FROM rascunho"
+            # Se encontrar, exclui todas de uma vez para não sobrar duplicata
+            if len(colunas_tribunal) > 0:
+                texto_excluir = ", ".join([f'"{c}"' for c in colunas_tribunal])
+                sql_select = f"SELECT '{tabela_origem}' AS tabela_origem, '{tribunal}' AS Tribunal, * EXCLUDE ({texto_excluir}) FROM rascunho"
             else:
                 sql_select = f"SELECT '{tabela_origem}' AS tabela_origem, '{tribunal}' AS Tribunal, * FROM rascunho"
 
-            # Se a tabela principal 'dados_unificados' ainda NÃO existe, cria ela
-            if not tabela_foi_criada:
-                con.execute(f"CREATE TABLE dados_unificados AS {sql_select};")
-                tabela_foi_criada = True
-            # Se já existe, apenas cola as novas linhas
-            else:
-                con.execute(f"INSERT INTO dados_unificados BY NAME {sql_select};")
-
-            # Apaga o rascunho e remove o arquivo CSV lido
+            # Nome do mini arquivo (Ex: parte_TJSP_CN.parquet)
+            nome_parte = f"parte_{tribunal}_{tabela_origem}.parquet"
+            
+            # Copia direto do SQL para o arquivo no disco (já nasce compactado)
+            con.execute(f"COPY ({sql_select}) TO '{nome_parte}' (FORMAT PARQUET)")
+            
             con.execute("DROP TABLE rascunho;")
             os.remove(caminho_csv)
 
@@ -129,34 +105,38 @@ for tribunal in nome_tribunal:
     except Exception as erro:
         print(f"❌ Erro ao processar o tribunal {tribunal}: {erro}", flush=True)
 
-    # PASSO D: Limpeza de segurança após terminar o tribunal
+    # PASSO D: Limpeza do tribunal
     if os.path.exists(arquivo_zip):
         os.remove(arquivo_zip)
     if os.path.exists(pasta_temp):
         shutil.rmtree(pasta_temp)
 
-# 4. EXPORTAR A TABELA COMPLETA PARA UM ARQUIVO PARQUET ÚNICO
-print("\n📦 Salvando a base unificada em arquivo Parquet...", flush=True)
+
+# 4. juntando tudo
+print("\n📦 Juntando todos os arquivos em um único Parquet...", flush=True)
+# O "union_by_name=true" aceita que os tribunais tenham colunas diferentes sem dar erro!
 con.execute(f"""
-    COPY dados_unificados TO '{ARQUIVO_PARQUET_FINAL}' (FORMAT PARQUET, COMPRESSION ZSTD);
+    COPY (
+        SELECT * FROM read_parquet('parte_*.parquet', union_by_name=true)
+    ) TO '{ARQUIVO_PARQUET_FINAL}' (FORMAT PARQUET, COMPRESSION ZSTD);
 """)
 
-# Fecha a conexão com o banco e apaga o arquivo temporário do DuckDB
 con.close()
-if os.path.exists(ARQUIVO_BANCO):
-    os.remove(ARQUIVO_BANCO)
 
-# 5. ENVIAR O ARQUIVO PARQUET FINAL PARA O HUGGING FACE
-print(f"🚀 Enviando {ARQUIVO_PARQUET_FINAL} para o Hugging Face...", flush=True)
+# Apagar os pedaços soltos para limpar o servidor
+for f in glob.glob("parte_*.parquet"):
+    os.remove(f)
+
+# 5. UPLOAD PARA O HUGGING FACE
+print(f"🚀 Enviando a base unificada para o Hugging Face...", flush=True)
 api.upload_file(
     path_or_fileobj=ARQUIVO_PARQUET_FINAL,
     path_in_repo=f"data/{ARQUIVO_PARQUET_FINAL}",
     repo_id=REPO_ID,
     repo_type="dataset",
-    commit_message="Atualização da base gigante unificada de todos os 92 tribunais"
+    commit_message="Base CNJ unificada com suporte a colunas variáveis (schema evolution)"
 )
 
-# Limpa o arquivo Parquet local final
 if os.path.exists(ARQUIVO_PARQUET_FINAL):
     os.remove(ARQUIVO_PARQUET_FINAL)
 
