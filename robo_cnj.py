@@ -7,7 +7,7 @@ import requests
 import duckdb
 from huggingface_hub import HfApi
 
-# 1. DIVISÃO EM EXATAMENTE 4 ARQUIVOS
+# 1. DIVISÃO EM RAMOS
 ramos_judiciario = {
     "1_TJs_Estaduais": [
         'TJAC','TJAL','TJAM','TJAP','TJBA','TJCE','TJDFT','TJES','TJGO','TJMA',
