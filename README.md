@@ -45,9 +45,3 @@ df = duckdb.query("""
 """).df()
 
 print(df)****
-
-## Dicionário de Variáveis
-
-O dicionário de dados completo com a descrição de todas as variáveis, metadados e códigos do DataJud/CNJ está disponível no arquivo abaixo:
-
-**[Baixar Dicionário de Variáveis (.xlsx)](docs/dicionario_dados.xlsx?raw=true)**
