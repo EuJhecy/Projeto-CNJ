@@ -8,7 +8,7 @@ import zipfile
 import duckdb
 from huggingface_hub import HfApi
 
-# --- NOVO: Captura da data e ano/mês para versionamento e histórico ---
+# Captura da data e ano/mês para versionamento e histórico
 data_atual = datetime.now()
 ano_mes = data_atual.strftime("%Y-%m")  # Exemplo: '2026-06'
 data_extracao_str = data_atual.strftime("%Y-%m-%d")  # Exemplo: '2026-06-15'
