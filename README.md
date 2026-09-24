@@ -5,11 +5,23 @@ Este projeto executa uma rotina diária automatizada para extrair, padronizar e 
 O script roda automaticamente todos os dias às 3h da manhã (horário de Brasília) via GitHub Actions.
 
 ---
+## Dicionário de Variáveis
+O dicionário de dados completo com a descrição de todas as variáveis, metadados e códigos do DataJud/CNJ está disponível para download: 
+**[Baixar Dicionário de Dados em Excel (.xlsx)](dicionario_dados.xlsx?raw=true)**
+
+---
 ## Fonte dos Dados
+**1. Origem e Coleta dos Dados**
+
 Os microdados são extraídos da plataforma oficial do CNJ no painel **Estatísticas do Poder Judiciário** (aba *Download*). 
 - **Endpoint da API:** Os downloads são realizados consumindo diretamente o endpoint de exportação do sistema:
   `https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={TRIBUNAL}&...`
 
+**2. Como funciona a atualização no CNJ**
+
+- **Envio pelos Tribunais:** Os 92 tribunais brasileiros registram os processos em seus sistemas locais e enviam essas informações diariamente para a base nacional do CNJ, o DataJud.
+- **Consolidação:** O CNJ consolida essas cargas e disponibiliza os arquivos compactados (`.zip`) por tribunal.
+- **Captura Automática:** A rotina executada diariamente garante a captura tempestiva de qualquer nova inclusão, retificação ou baixa processual disponibilizada pelo CNJ.
 ---
 ## O que o robô faz
 
