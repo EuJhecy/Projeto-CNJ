@@ -11,7 +11,7 @@ O script roda automaticamente todos os dias às 3h da manhã (horário de Brasí
 **<a href="plano_de_trabalho_do_projeto.pdf">Baixar Plano de Trabalho do Projeto (.pdf)</a>**
   
 2. **Dicionário dos dados:** O dicionário de dados completo com a descrição de todas as variáveis, metadados e códigos do DataJud/CNJ está disponível para download:
-**<a href="dicionario_dados.xlsx">Baixar Dicionário de Dados em Excel (.xlsx)</a>**
+**<a href="dicionario_dos_dados.xlsx">Baixar Dicionário de Dados em Excel (.xlsx)</a>**
  
 ---
 ## Fonte dos Dados
