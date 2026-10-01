@@ -8,10 +8,10 @@ O script roda automaticamente todos os dias às 3h da manhã (horário de Brasí
 ## Documentação do Projeto
 
 1. **Plano de trabalho:** Apresenta o escopo institucional, os objetivos, as justificativas e a metodologia adotada no projeto, detalhando o planejamento da pipeline e os resultados esperados com a consolidação dos microdados.
-**[Baixar Plano de Trabalho do Projeto (.pdf)](docs/plano_de_trabalho_do_projeto.pdf?raw=true)**
+**<a href="plano_de_trabalho_do_projeto.pdf">Baixar Plano de Trabalho do Projeto (.pdf)</a>**
   
 2. **Dicionário dos dados:** O dicionário de dados completo com a descrição de todas as variáveis, metadados e códigos do DataJud/CNJ está disponível para download:
-**[Baixar Dicionário de Dados em Excel (.xlsx)](dicionario_dados.xlsx?raw=true)**
+**<a href="dicionario_dados.xlsx">Baixar Dicionário de Dados em Excel (.xlsx)</a>**
  
 ---
 ## Fonte dos Dados
