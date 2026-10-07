@@ -77,7 +77,7 @@ import duckdb
 # Consulta a base inteira unificada (os 4 ramos) em uma única tabela
 df = duckdb.query("""
     SELECT * 
-    FROM read_parquetread_parquet('[https://huggingface.co/datasets/EuJhecy/dados-cnj/resolve/main/data/2026-09/1_TJs_Estaduais.parquet](https://huggingface.co/datasets/EuJhecy/dados-cnj/resolve/main/data/2026-09/1_TJs_Estaduais.parquet)')
+    FROM read_parquet('hf://datasets/EuJhecy/dados-cnj/data/2026-09/*.parquet', union_by_name=true)
     LIMIT 100
 """).df()
 
