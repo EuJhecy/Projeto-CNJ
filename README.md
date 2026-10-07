@@ -81,4 +81,4 @@ df = duckdb.query("""
     LIMIT 100
 """).df()
 
-print(df)****
+print(df)
