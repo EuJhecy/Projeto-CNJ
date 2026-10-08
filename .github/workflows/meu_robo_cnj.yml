@@ -3,7 +3,7 @@ name: Executar Robô CNJ - Hugging Face
 on:
   workflow_dispatch:
   schedule:
-  - cron: '0 6 * * *' # Roda diariamente
+  - cron: '0 3 * * *' # Roda diariamente
 
 jobs:
   executar:
