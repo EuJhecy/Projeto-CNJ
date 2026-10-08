@@ -8,10 +8,12 @@ import zipfile
 import duckdb
 from huggingface_hub import HfApi
 
+# Configuração de data
 data_atual = datetime.now()
 ano_mes = data_atual.strftime("%Y-%m")
 data_extracao_str = data_atual.strftime("%Y-%m-%d")
 
+# Mapeamento completo dos 92 tribunais divididos por ramos
 ramos_judiciario = {
     "1_TJs_Estaduais": [
         'TJAC', 'TJAL', 'TJAM', 'TJAP', 'TJBA', 'TJCE', 'TJDFT', 'TJES', 'TJGO', 'TJMA',
@@ -37,7 +39,7 @@ HF_TOKEN = os.environ.get("HF_TOKEN")
 REPO_ID = "EuJhecy/dados-cnj"
 
 if not HF_TOKEN:
-    raise ValueError("❌ Erro: A variável de ambiente HF_TOKEN não foi configurada!")
+    raise ValueError("❌ Erro fatal: A variável de ambiente HF_TOKEN não foi configurada nos Secrets do GitHub!")
 
 api = HfApi(token=HF_TOKEN)
 con = duckdb.connect()
@@ -45,13 +47,14 @@ con.execute("SET max_memory = '6GB';")
 
 FIFO_PIPE = "stream_dados.fifo"
 
-print(f"Iniciando extração e upload para Hugging Face ({ano_mes})...\n", flush=True)
+print(f"🚀 Iniciando Robô CNJ - Extração e Upload para Hugging Face ({ano_mes})...\n", flush=True)
 
 for nome_ramo, lista_tribunais in ramos_judiciario.items():
     print(f"========================================", flush=True)
     print(f"PROCESSANDO RAMO: {nome_ramo} ({len(lista_tribunais)} tribunais)", flush=True)
     print(f"========================================", flush=True)
 
+    # Limpa partes de execuções ou ramos anteriores
     for f in glob.glob("parte_*.parquet"):
         os.remove(f)
 
@@ -91,6 +94,7 @@ for nome_ramo, lista_tribunais in ramos_judiciario.items():
                 if os.path.exists(FIFO_PIPE):
                     os.remove(FIFO_PIPE)
 
+                # Tratamento para manter apenas 1 coluna 'Tribunal'
                 colunas_originais = [c[0] for c in con.execute("DESCRIBE rascunho").fetchall()]
                 colunas_tribunal = [c for c in colunas_originais if c.lower() == "tribunal"]
 
@@ -132,11 +136,11 @@ for nome_ramo, lista_tribunais in ramos_judiciario.items():
         if os.path.exists(arquivo_zip):
             os.remove(arquivo_zip)
 
-    # UNIFICAÇÃO E UPLOAD DO RAMO PARA HUGGING FACE
+    # UNIFICAÇÃO E UPLOAD DO RAMO
     arquivo_ramo_local = f"{nome_ramo}_{ano_mes}.parquet"
     caminho_hf = f"data/{ano_mes}/{nome_ramo}.parquet"
 
-    print(f"\n Subindo {nome_ramo} para o Hugging Face...", flush=True)
+    print(f"\n Subindo ramo {nome_ramo} para o Hugging Face...", flush=True)
 
     try:
         con.execute(f"""
@@ -150,16 +154,17 @@ for nome_ramo, lista_tribunais in ramos_judiciario.items():
             path_in_repo=caminho_hf,
             repo_id=REPO_ID,
             repo_type="dataset",
-            commit_message=f"Adicionando base do ramo {nome_ramo} ({ano_mes})"
+            commit_message=f"Atualização da base {nome_ramo} ({ano_mes})"
         )
         print(f" Ramo {nome_ramo} enviado com sucesso!", flush=True)
 
     except Exception as erro:
         print(f"❌ Erro no upload do ramo {nome_ramo}: {erro}", flush=True)
 
+    # Limpeza do disco antes de passar pro próximo ramo
     if os.path.exists(arquivo_ramo_local):
         os.remove(arquivo_ramo_local)
     for f in glob.glob("parte_*.parquet"):
         os.remove(f)
 
-print("\n EXTRAÇÃO E UPLOAD FINALIZADOS COM SUCESSO NO HUGGING FACE!")
+print("\n🏆 PROCESSO COMPLETO FINALIZADO COM SUCESSO!")
