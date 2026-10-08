@@ -2,18 +2,16 @@ import glob
 from datetime import datetime
 import os
 import requests
-import shutil
 import subprocess
+import uuid
 import zipfile
 import duckdb
 from huggingface_hub import HfApi
 
-# Captura da data e ano/mês para versionamento e histórico
 data_atual = datetime.now()
-ano_mes = data_atual.strftime("%Y-%m")  # Exemplo: '2026-06'
-data_extracao_str = data_atual.strftime("%Y-%m-%d")  # Exemplo: '2026-06-15'
+ano_mes = data_atual.strftime("%Y-%m")
+data_extracao_str = data_atual.strftime("%Y-%m-%d")
 
-# 1. DIVISÃO EM RAMOS (Formatado na Horizontal - 10 por linha)
 ramos_judiciario = {
     "1_TJs_Estaduais": [
         'TJAC', 'TJAL', 'TJAM', 'TJAP', 'TJBA', 'TJCE', 'TJDFT', 'TJES', 'TJGO', 'TJMA',
@@ -31,165 +29,137 @@ ramos_judiciario = {
         'TRT21', 'TRT22', 'TRT23', 'TRT24'
     ],
     "4_TRFs_e_Superiores": [
-        'TRF1', 'TRF2', 'TRF3', 'TRF4', 'TRF5', 'TRF6', 'CJF', 'STJ', 'STM', 'TSE',
-        'TST'
+        'TRF1', 'TRF2', 'TRF3', 'TRF4', 'TRF5', 'TRF6', 'CJF', 'STJ', 'STM', 'TSE', 'TST'
     ]
 }
 
 HF_TOKEN = os.environ.get("HF_TOKEN")
 REPO_ID = "EuJhecy/dados-cnj"
 
+if not HF_TOKEN:
+    raise ValueError("❌ Erro: A variável de ambiente HF_TOKEN não foi configurada!")
+
 api = HfApi(token=HF_TOKEN)
 con = duckdb.connect()
-con.execute("SET max_memory = '4GB';")
+con.execute("SET max_memory = '6GB';")
 
 FIFO_PIPE = "stream_dados.fifo"
 
-print(
-    f" Iniciando processamento do mês {ano_mes} (Data: {data_extracao_str})...",
-    flush=True,
-)
+print(f"Iniciando extração e upload para Hugging Face ({ano_mes})...\n", flush=True)
 
 for nome_ramo, lista_tribunais in ramos_judiciario.items():
-  print(f"\n========================================", flush=True)
-  print(
-      f"PROCESSANDO RAMO: {nome_ramo} ({len(lista_tribunais)} tribunais)",
-      flush=True,
-  )
-  print(f"========================================", flush=True)
+    print(f"========================================", flush=True)
+    print(f"PROCESSANDO RAMO: {nome_ramo} ({len(lista_tribunais)} tribunais)", flush=True)
+    print(f"========================================", flush=True)
 
-  for tribunal in lista_tribunais:
-    print(f"\n--- Extraindo: {tribunal} ---", flush=True)
-    arquivo_zip = f"{tribunal}.zip"
-    url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
+    for f in glob.glob("parte_*.parquet"):
+        os.remove(f)
+
+    for tribunal in lista_tribunais:
+        print(f"--- Extraindo: {tribunal} ---", flush=True)
+        arquivo_zip = f"{tribunal}.zip"
+        url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
+
+        try:
+            resposta = requests.get(url, stream=True, timeout=(30, 900))
+            resposta.raise_for_status()
+
+            with open(arquivo_zip, "wb") as f:
+                for pedaco in resposta.iter_content(chunk_size=1024 * 1024 * 16):
+                    if pedaco:
+                        f.write(pedaco)
+
+            with zipfile.ZipFile(arquivo_zip, "r") as zip_ref:
+                arquivos_csv = [
+                    f for f in zip_ref.namelist()
+                    if f.endswith(".csv") and "tbl_correg" not in f.lower()
+                ]
+
+            for arq_csv in arquivos_csv:
+                nome_apenas = os.path.basename(arq_csv)
+                nome_sem_ext = os.path.splitext(nome_apenas)[0]
+                tabela_origem = nome_sem_ext.split("_", 1)[-1].upper() if "_" in nome_sem_ext else nome_sem_ext.upper()
+
+                if os.path.exists(FIFO_PIPE):
+                    os.remove(FIFO_PIPE)
+                os.mkfifo(FIFO_PIPE)
+
+                proc = subprocess.Popen(f'unzip -p "{arquivo_zip}" "{arq_csv}" > "{FIFO_PIPE}"', shell=True)
+                con.execute(f"CREATE OR REPLACE TEMP TABLE rascunho AS SELECT * FROM read_csv_auto('{FIFO_PIPE}', ignore_errors=true, all_varchar=true);")
+                proc.wait()
+
+                if os.path.exists(FIFO_PIPE):
+                    os.remove(FIFO_PIPE)
+
+                colunas_originais = [c[0] for c in con.execute("DESCRIBE rascunho").fetchall()]
+                colunas_tribunal = [c for c in colunas_originais if c.lower() == "tribunal"]
+
+                if len(colunas_tribunal) > 0:
+                    col_trib_nome = colunas_tribunal[0]
+                    sql_select = f"""
+                        SELECT 
+                            '{data_extracao_str}' AS dt_extracao, 
+                            '{tabela_origem}' AS tabela_origem, 
+                            COALESCE(NULLIF(TRIM("{col_trib_nome}"), ''), '{tribunal}') AS Tribunal, 
+                            * EXCLUDE ("{col_trib_nome}") 
+                        FROM rascunho
+                    """
+                else:
+                    sql_select = f"""
+                        SELECT 
+                            '{data_extracao_str}' AS dt_extracao, 
+                            '{tabela_origem}' AS tabela_origem, 
+                            '{tribunal}' AS Tribunal, 
+                            * 
+                        FROM rascunho
+                    """
+
+                uid = str(uuid.uuid4())[:8]
+                nome_parte = f"parte_{tribunal}_{tabela_origem}_{uid}.parquet"
+                con.execute(f"COPY ({sql_select}) TO '{nome_parte}' (FORMAT PARQUET)")
+                con.execute("DROP TABLE rascunho;")
+
+            if os.path.exists(arquivo_zip):
+                os.remove(arquivo_zip)
+
+            print(f"  ✅ {tribunal} concluído!", flush=True)
+
+        except Exception as erro:
+            print(f"  ❌ Erro ao processar {tribunal}: {erro}", flush=True)
+
+        if os.path.exists(FIFO_PIPE):
+            os.remove(FIFO_PIPE)
+        if os.path.exists(arquivo_zip):
+            os.remove(arquivo_zip)
+
+    # UNIFICAÇÃO E UPLOAD DO RAMO PARA HUGGING FACE
+    arquivo_ramo_local = f"{nome_ramo}_{ano_mes}.parquet"
+    caminho_hf = f"data/{ano_mes}/{nome_ramo}.parquet"
+
+    print(f"\n Subindo {nome_ramo} para o Hugging Face...", flush=True)
 
     try:
-      resposta = requests.get(url, stream=True, timeout=(30, 900))
-      resposta.raise_for_status()
-
-      with open(arquivo_zip, "wb") as f:
-        for pedaco in resposta.iter_content(chunk_size=1024 * 1024 * 16):
-          if pedaco:
-            f.write(pedaco)
-
-      with zipfile.ZipFile(arquivo_zip, "r") as zip_ref:
-        arquivos_csv = [
-            f
-            for f in zip_ref.namelist()
-            if f.endswith(".csv") and "tbl_correg" not in f.lower()
-        ]
-
-      for arq_csv in arquivos_csv:
-        nome_apenas = os.path.basename(arq_csv)
-        nome_sem_ext = os.path.splitext(nome_apenas)[0]
-        tabela_origem = (
-            nome_sem_ext.split("_", 1)[-1].upper()
-            if "_" in nome_sem_ext
-            else nome_sem_ext.upper()
-        )
-
-        if os.path.exists(FIFO_PIPE):
-          os.remove(FIFO_PIPE)
-        os.mkfifo(FIFO_PIPE)
-
-        proc = subprocess.Popen(
-            f'unzip -p "{arquivo_zip}" "{arq_csv}" > "{FIFO_PIPE}"', shell=True
-        )
-        con.execute(
-            "CREATE OR REPLACE TEMP TABLE rascunho AS SELECT * FROM"
-            f" read_csv_auto('{FIFO_PIPE}', ignore_errors=true,"
-            " all_varchar=true);"
-        )
-        proc.wait()
-
-        if os.path.exists(FIFO_PIPE):
-          os.remove(FIFO_PIPE)
-
-        colunas_originais = [
-            c[0] for c in con.execute("DESCRIBE rascunho").fetchall()
-        ]
-        colunas_tribunal = [
-            c for c in colunas_originais if c.lower() == "tribunal"
-        ]
-
-        # --- NOVO: Adicionando dt_extracao no SELECT ---
-        if len(colunas_tribunal) > 0:
-          texto_excluir = ", ".join([f'"{c}"' for c in colunas_tribunal])
-          sql_select = (
-              f"SELECT '{data_extracao_str}' AS dt_extracao, '{tabela_origem}'"
-              f" AS tabela_origem, '{tribunal}' AS Tribunal, * EXCLUDE"
-              f" ({texto_excluir}) FROM rascunho"
-          )
-        else:
-          sql_select = (
-              f"SELECT '{data_extracao_str}' AS dt_extracao, '{tabela_origem}'"
-              f" AS tabela_origem, '{tribunal}' AS Tribunal, * FROM rascunho"
-          )
-
-        nome_parte = f"parte_{tribunal}_{tabela_origem}.parquet"
-        con.execute(
-            f"COPY ({sql_select}) TO '{nome_parte}' (FORMAT PARQUET)"
-        )
-        con.execute("DROP TABLE rascunho;")
-
-      if os.path.exists(arquivo_zip):
-        os.remove(arquivo_zip)
-
-      print(
-          f"✅ Tribunal {tribunal} convertido para fragmentos locais!",
-          flush=True,
-      )
-
-    except Exception as erro:
-      print(f"❌ Erro ao processar {tribunal}: {erro}", flush=True)
-
-    if os.path.exists(FIFO_PIPE):
-      os.remove(FIFO_PIPE)
-    if os.path.exists(arquivo_zip):
-      os.remove(arquivo_zip)
-
-  # UNIFICAÇÃO E UPLOAD DO RAMO INTEIRO COM HISTÓRICO
-  arquivo_ramo_local = f"{nome_ramo}_{ano_mes}.parquet"
-
-  # Caminho dentro do Hugging Face usando diretório por ano-mês
-  caminho_hf = f"data/{ano_mes}/{nome_ramo}.parquet"
-
-  print(
-      f"\n Consolidando {arquivo_ramo_local} e enviando para {caminho_hf}...",
-      flush=True,
-  )
-
-  try:
-    con.execute(f"""
+        con.execute(f"""
             COPY (
                 SELECT * FROM read_parquet('parte_*.parquet', union_by_name=true)
             ) TO '{arquivo_ramo_local}' (FORMAT PARQUET, COMPRESSION ZSTD);
         """)
 
-    api.upload_file(
-        path_or_fileobj=arquivo_ramo_local,
-        path_in_repo=caminho_hf,
-        repo_id=REPO_ID,
-        repo_type="dataset",
-        commit_message=(
-            f"Adicionando base do ramo {nome_ramo} para a competência {ano_mes}"
-        ),
-    )
-    print(f"Ramo {nome_ramo} salvo em '{caminho_hf}'!", flush=True)
+        api.upload_file(
+            path_or_fileobj=arquivo_ramo_local,
+            path_in_repo=caminho_hf,
+            repo_id=REPO_ID,
+            repo_type="dataset",
+            commit_message=f"Adicionando base do ramo {nome_ramo} ({ano_mes})"
+        )
+        print(f" Ramo {nome_ramo} enviado com sucesso!", flush=True)
 
-  except Exception as erro:
-    print(
-        f"❌ Erro ao consolidar e enviar o ramo {nome_ramo}: {erro}", flush=True
-    )
+    except Exception as erro:
+        print(f"❌ Erro no upload do ramo {nome_ramo}: {erro}", flush=True)
 
-  # FAXINA COMPLETA
-  if os.path.exists(arquivo_ramo_local):
-    os.remove(arquivo_ramo_local)
-  for f in glob.glob("parte_*.parquet"):
-    os.remove(f)
+    if os.path.exists(arquivo_ramo_local):
+        os.remove(arquivo_ramo_local)
+    for f in glob.glob("parte_*.parquet"):
+        os.remove(f)
 
-print(
-    "\n🏆 Processo finalizado! As bases mensais foram atualizadas no Hugging"
-    " Face.",
-    flush=True,
-)
+print("\n EXTRAÇÃO E UPLOAD FINALIZADOS COM SUCESSO NO HUGGING FACE!")
