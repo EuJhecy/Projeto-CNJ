@@ -1,12 +1,13 @@
 import glob
-from datetime import datetime
+import io
 import os
-import requests
-import subprocess
+from datetime import datetime
+import shutil
 import uuid
 import zipfile
 import duckdb
 from huggingface_hub import HfApi
+import requests
 
 # Configuração de data
 data_atual = datetime.now()
@@ -45,9 +46,65 @@ api = HfApi(token=HF_TOKEN)
 con = duckdb.connect()
 con.execute("SET max_memory = '6GB';")
 
-FIFO_PIPE = "stream_dados.fifo"
+TEMP_CSV = "temp_stream.csv"
 
-print(f"🚀 Iniciando Robô CNJ - Extração e Upload para Hugging Face ({ano_mes})...\n", flush=True)
+def processar_csv_duckdb(caminho_csv_local, tabela_origem, tribunal_nome):
+    """Lê o CSV local via DuckDB, ajusta metadados e salva como parquet local."""
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE rascunho AS 
+        SELECT * FROM read_csv_auto('{caminho_csv_local}', ignore_errors=true, all_varchar=true);
+    """)
+
+    # Tratamento para manter apenas 1 coluna 'Tribunal'
+    colunas_originais = [c[0] for c in con.execute("DESCRIBE rascunho").fetchall()]
+    colunas_tribunal = [c for c in colunas_originais if c.lower() == "tribunal"]
+
+    if len(colunas_tribunal) > 0:
+        col_trib_nome = colunas_tribunal[0]
+        sql_select = f"""
+            SELECT 
+                '{data_extracao_str}' AS dt_extracao, 
+                '{tabela_origem}' AS tabela_origem, 
+                COALESCE(NULLIF(TRIM("{col_trib_nome}"), ''), '{tribunal_nome}') AS Tribunal, 
+                * EXCLUDE ("{col_trib_nome}") 
+            FROM rascunho
+        """
+    else:
+        sql_select = f"""
+            SELECT 
+                '{data_extracao_str}' AS dt_extracao, 
+                '{tabela_origem}' AS tabela_origem, 
+                '{tribunal_nome}' AS Tribunal, 
+                * 
+            FROM rascunho
+        """
+
+    uid = str(uuid.uuid4())[:8]
+    nome_parte = f"parte_{tribunal_nome}_{tabela_origem}_{uid}.parquet"
+    con.execute(f"COPY ({sql_select}) TO '{nome_parte}' (FORMAT PARQUET)")
+    con.execute("DROP TABLE rascunho;")
+
+
+def Mapear_tabela_origem(nome_arquivo):
+    """Identifica com precisão a sigla da tabela de origem."""
+    caminho_upper = nome_arquivo.upper()
+    if "CN" in caminho_upper and "CP" not in caminho_upper:
+        return "CN"
+    elif "SENT" in caminho_upper:
+        return "SENT"
+    elif "TBAIX" in caminho_upper:
+        return "TBAIX"
+    elif "CPMAIS15ANOS" in caminho_upper or "15ANOS" in caminho_upper:
+        return "CPMAIS15ANOS"
+    elif "CP" in caminho_upper or "CPL" in caminho_upper:
+        return "CP"
+    else:
+        nome_apenas = os.path.basename(nome_arquivo)
+        nome_sem_ext = os.path.splitext(nome_apenas)[0]
+        return nome_sem_ext.split("_")[-1].upper()
+
+
+print(f" Iniciando Robô CNJ - Extração e Upload para Hugging Face ({ano_mes})...\n", flush=True)
 
 for nome_ramo, lista_tribunais in ramos_judiciario.items():
     print(f"========================================", flush=True)
@@ -61,7 +118,9 @@ for nome_ramo, lista_tribunais in ramos_judiciario.items():
     for tribunal in lista_tribunais:
         print(f"--- Extraindo: {tribunal} ---", flush=True)
         arquivo_zip = f"{tribunal}.zip"
-        url = f"https://api-csvr.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&oj=&grau=&municipio=&procedimento=&codigo_ultima_classe=&codigos_assuntos=&polo_passivo=&polo_ativo=&tema=&ambiente=csv_p"
+        
+        # URL do ClickHouse
+        url = f"https://api-estatisticas-clickhouse.cloud.cnj.jus.br/download_csv?tribunal={tribunal}&indicador=&id_orgao_julgador=&grau=&municipio_oj=&procedimento=&id_ultima_classe=&id_assunto=&polo_passivo=&polo_ativo=&tema=&extensao=csv"
 
         try:
             resposta = requests.get(url, stream=True, timeout=(30, 900))
@@ -72,67 +131,45 @@ for nome_ramo, lista_tribunais in ramos_judiciario.items():
                     if pedaco:
                         f.write(pedaco)
 
-            with zipfile.ZipFile(arquivo_zip, "r") as zip_ref:
-                arquivos_csv = [
-                    f for f in zip_ref.namelist()
-                    if f.endswith(".csv") and "tbl_correg" not in f.lower()
-                ]
+            # Lendo o ZIP principal e descompactando os SUB-ZIPs na memória
+            with zipfile.ZipFile(arquivo_zip, "r") as main_zip:
+                for item in main_zip.infolist():
+                    tabela_origem = Mapear_tabela_origem(item.filename)
 
-            for arq_csv in arquivos_csv:
-                nome_apenas = os.path.basename(arq_csv)
-                nome_sem_ext = os.path.splitext(nome_apenas)[0]
-                tabela_origem = nome_sem_ext.split("_", 1)[-1].upper() if "_" in nome_sem_ext else nome_sem_ext.upper()
+                    # Caso 1: Arquivo é um sub-ZIP (ex: TJDFT_CN.zip)
+                    if item.filename.lower().endswith(".zip"):
+                        bytes_sub_zip = main_zip.read(item.filename)
+                        with zipfile.ZipFile(io.BytesIO(bytes_sub_zip)) as sub_zip:
+                            for arq_csv in sub_zip.namelist():
+                                if arq_csv.lower().endswith(".csv") and "tbl_correg" not in arq_csv.lower():
+                                    with sub_zip.open(arq_csv) as source, open(TEMP_CSV, "wb") as target:
+                                        shutil.copyfileobj(source, target)
+                                    
+                                    processar_csv_duckdb(TEMP_CSV, tabela_origem, tribunal)
+                                    
+                                    if os.path.exists(TEMP_CSV):
+                                        os.remove(TEMP_CSV)
 
-                if os.path.exists(FIFO_PIPE):
-                    os.remove(FIFO_PIPE)
-                os.mkfifo(FIFO_PIPE)
-
-                proc = subprocess.Popen(f'unzip -p "{arquivo_zip}" "{arq_csv}" > "{FIFO_PIPE}"', shell=True)
-                con.execute(f"CREATE OR REPLACE TEMP TABLE rascunho AS SELECT * FROM read_csv_auto('{FIFO_PIPE}', ignore_errors=true, all_varchar=true);")
-                proc.wait()
-
-                if os.path.exists(FIFO_PIPE):
-                    os.remove(FIFO_PIPE)
-
-                # Tratamento para manter apenas 1 coluna 'Tribunal'
-                colunas_originais = [c[0] for c in con.execute("DESCRIBE rascunho").fetchall()]
-                colunas_tribunal = [c for c in colunas_originais if c.lower() == "tribunal"]
-
-                if len(colunas_tribunal) > 0:
-                    col_trib_nome = colunas_tribunal[0]
-                    sql_select = f"""
-                        SELECT 
-                            '{data_extracao_str}' AS dt_extracao, 
-                            '{tabela_origem}' AS tabela_origem, 
-                            COALESCE(NULLIF(TRIM("{col_trib_nome}"), ''), '{tribunal}') AS Tribunal, 
-                            * EXCLUDE ("{col_trib_nome}") 
-                        FROM rascunho
-                    """
-                else:
-                    sql_select = f"""
-                        SELECT 
-                            '{data_extracao_str}' AS dt_extracao, 
-                            '{tabela_origem}' AS tabela_origem, 
-                            '{tribunal}' AS Tribunal, 
-                            * 
-                        FROM rascunho
-                    """
-
-                uid = str(uuid.uuid4())[:8]
-                nome_parte = f"parte_{tribunal}_{tabela_origem}_{uid}.parquet"
-                con.execute(f"COPY ({sql_select}) TO '{nome_parte}' (FORMAT PARQUET)")
-                con.execute("DROP TABLE rascunho;")
+                    # Caso 2: Arquivo é um CSV direto no pacote principal
+                    elif item.filename.lower().endswith(".csv") and "tbl_correg" not in item.filename.lower():
+                        with main_zip.open(item.filename) as source, open(TEMP_CSV, "wb") as target:
+                            shutil.copyfileobj(source, target)
+                        
+                        processar_csv_duckdb(TEMP_CSV, tabela_origem, tribunal)
+                        
+                        if os.path.exists(TEMP_CSV):
+                            os.remove(TEMP_CSV)
 
             if os.path.exists(arquivo_zip):
                 os.remove(arquivo_zip)
 
-            print(f"  ✅ {tribunal} concluído!", flush=True)
+            print(f"   ✅ {tribunal} concluído!", flush=True)
 
         except Exception as erro:
-            print(f"  ❌ Erro ao processar {tribunal}: {erro}", flush=True)
+            print(f"   ❌ Erro ao processar {tribunal}: {erro}", flush=True)
 
-        if os.path.exists(FIFO_PIPE):
-            os.remove(FIFO_PIPE)
+        if os.path.exists(TEMP_CSV):
+            os.remove(TEMP_CSV)
         if os.path.exists(arquivo_zip):
             os.remove(arquivo_zip)
 
@@ -167,4 +204,4 @@ for nome_ramo, lista_tribunais in ramos_judiciario.items():
     for f in glob.glob("parte_*.parquet"):
         os.remove(f)
 
-print("\n🏆 PROCESSO COMPLETO FINALIZADO COM SUCESSO!")
+print("\n PROCESSO COMPLETO FINALIZADO COM SUCESSO!")
